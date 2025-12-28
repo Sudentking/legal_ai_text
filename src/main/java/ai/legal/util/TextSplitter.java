@@ -30,12 +30,27 @@ public class TextSplitter {
             return chunks;
         }
         int size = Math.max(MIN_CHUNK_SIZE, Math.min(MAX_CHUNK_SIZE, chunkSize));
-        int index = 0;
-        int length = text.length();
-        while (index < length) {
-            int end = Math.min(index + size, length);
-            chunks.add(text.substring(index, end));
-            index = end;
+        String[] paragraphs = text.split("\\r?\\n");
+        StringBuilder current = new StringBuilder();
+        for (String paragraph : paragraphs) {
+            if (paragraph == null) {
+                continue;
+            }
+            String part = paragraph.trim();
+            if (part.isEmpty()) {
+                continue;
+            }
+            if (current.length() > 0) {
+                current.append('\n');
+            }
+            current.append(part);
+            if (current.length() >= size) {
+                chunks.add(current.toString());
+                current.setLength(0);
+            }
+        }
+        if (current.length() > 0) {
+            chunks.add(current.toString());
         }
         return chunks;
     }

@@ -1,11 +1,11 @@
 package ai.legal.dao.mysql;
 
+import ai.legal.config.MySqlConfig;
 import ai.legal.model.LawText;
 import ai.legal.model.LawTextChunk;
 
 import java.sql.Connection;
 import java.sql.Date;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -17,18 +17,6 @@ import java.util.List;
  * MySQL law_text 与 law_text_chunk 的访问层。
  */
 public class LawTextDao {
-
-    private static final String MYSQL_URL = "jdbc:mysql://localhost:3306/legal_dev?useSSL=false&serverTimezone=UTC";
-    private static final String MYSQL_USER = "root";
-    private static final String MYSQL_PASSWORD = "root123456";
-
-    static {
-        try {
-            Class.forName("com.mysql.cj.jdbc.Driver");
-        } catch (ClassNotFoundException e) {
-            throw new IllegalStateException("未找到 MySQL JDBC 驱动", e);
-        }
-    }
 
     /**
      * 获取全部 law_text 记录。
@@ -85,7 +73,7 @@ public class LawTextDao {
     }
 
     private Connection getConnection() throws SQLException {
-        return DriverManager.getConnection(MYSQL_URL, MYSQL_USER, MYSQL_PASSWORD);
+        return MySqlConfig.getConnection();
     }
 
     private LawText mapRow(ResultSet rs) throws SQLException {

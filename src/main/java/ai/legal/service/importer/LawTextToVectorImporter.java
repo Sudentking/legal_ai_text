@@ -22,6 +22,7 @@ public class LawTextToVectorImporter {
         VectorSearchService vectorSearchService = new VectorSearchService(new LegalEmbeddingDao());
         LawTextChunkService chunkService = new LawTextChunkService(vectorSearchService, lawTextDao);
 
+        long start = System.currentTimeMillis();
         List<LawText> lawTexts = lawTextDao.findAll();
         System.out.println("待处理条文数量: " + lawTexts.size());
 
@@ -29,6 +30,7 @@ public class LawTextToVectorImporter {
             chunkService.processLawText(lawText);
         }
 
-        System.out.println("导入完成，处理总数: " + lawTexts.size());
+        long costMs = System.currentTimeMillis() - start;
+        System.out.println("导入完成，处理总数: " + lawTexts.size() + "，耗时 " + costMs + " ms");
     }
 }
