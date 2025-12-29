@@ -15,7 +15,8 @@ import java.util.regex.Pattern;
 public class LawTextParser {
 
     private static final Pattern CHAPTER_PATTERN = Pattern.compile("第[一二三四五六七八九十百0-9]+章\\s*(.*)");
-    private static final Pattern ARTICLE_PATTERN = Pattern.compile("第[一二三四五六七八九十百0-9]+条\\s*(.*)");
+    // 捕获“第X条”作为组1，避免将后续标题/正文放入条号
+    private static final Pattern ARTICLE_PATTERN = Pattern.compile("^(第[一二三四五六七八九十百0-9]+条)");
 
     /**
      * 将全文解析为 LawText 列表。
@@ -48,13 +49,13 @@ public class LawTextParser {
                 continue;
             }
             Matcher articleMatcher = ARTICLE_PATTERN.matcher(line);
-            if (articleMatcher.matches()) {
+            if (articleMatcher.find()) {
                 // 结束上一条
                 if (currentArticleNo != null && currentContent.length() > 0) {
                     result.add(buildLawText(lawCode, lawTitle, currentChapter, currentArticleNo, currentContent.toString()));
                 }
                 // 开始新条
-                currentArticleNo = line.split("\\s")[0];
+                currentArticleNo = articleMatcher.group(1); // 只取“第X条”，避免正文溢出
                 currentContent.setLength(0);
                 currentContent.append(line).append("\n");
             } else {
@@ -75,6 +76,10 @@ public class LawTextParser {
         LawText lawText = new LawText();
         lawText.setLawCode(lawCode);
         lawText.setLawTitle(title);
+        // 遵循表结构 article_number VARCHAR(50)，截断过长的条号，防止入库失败
+        if (articleNo != null && articleNo.length() > 50) {
+            articleNo = articleNo.substring(0, 50);
+        }
         lawText.setArticleNumber(articleNo);
         lawText.setFullText(content);
         lawText.setEffectiveDate((Date) null);
