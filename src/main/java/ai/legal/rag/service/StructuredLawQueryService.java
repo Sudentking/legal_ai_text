@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
  */
 public class StructuredLawQueryService {
 
-    private static final Pattern LAW_NAME_PATTERN = Pattern.compile("([\\p{IsHan}A-Za-z0-9]{2,30}(法典|法|条例|规定|办法|规章|解释))");
+    private static final Pattern LAW_NAME_PATTERN = Pattern.compile("([\\p{IsHan}A-Za-z0-9]{2,30}?(法典|法|条例|规定|办法|规章|解释))");
     private static final Pattern CHAPTER_PATTERN = Pattern.compile("第([一二三四五六七八九十百千0-9]+)章");
     private static final Pattern ARTICLE_PATTERN = Pattern.compile("第([一二三四五六七八九十百千0-9]+)条");
     private static final Pattern PART_PATTERN = Pattern.compile("第([一二三四五六七八九十百千0-9]+)(编|节)");
@@ -63,21 +63,25 @@ public class StructuredLawQueryService {
         if (question == null) {
             return null;
         }
-        String normalized = question.replaceAll("\\s+", "");
+        String normalized = normalize(question);
         Matcher lawMatcher = LAW_NAME_PATTERN.matcher(normalized);
         if (!lawMatcher.find()) {
             return null;
         }
-        String lawName = lawMatcher.group(0);
+        // 截断法律名称，避免将后续“第一章第一条内容”一起吃进匹配导致查询失败
+        String rawLawName = lawMatcher.group(0);
+        String lawName = trimAfterLawSuffix(rawLawName);
+
         String chapter = findFirstGroup(normalized, CHAPTER_PATTERN);
         String partOrSection = findFirstGroup(normalized, PART_PATTERN);
         String article = findFirstGroup(normalized, ARTICLE_PATTERN);
         boolean askFull = FULL_PATTERN.matcher(normalized).find();
         boolean general = GENERAL_PATTERN.matcher(normalized).find();
 
-        // 需要出现条/章/编/节/总则/全文任一才视为结构化查询
-        if (chapter == null && article == null && partOrSection == null && !askFull && !general) {
-            return null;
+        // 若只有法律名称没有章/条/全文关键词，降级为全文查询
+        boolean hasStructureKeyword = chapter != null || article != null || partOrSection != null || askFull || general;
+        if (!hasStructureKeyword) {
+            askFull = true;
         }
 
         StructuredQuery query = new StructuredQuery();
@@ -92,6 +96,26 @@ public class StructuredLawQueryService {
         }
         query.askFullLaw = askFull;
         return query;
+    }
+
+    private String normalize(String question) {
+        // 去除空白和常见书名号/引号，避免干扰匹配
+        return question.replaceAll("[\\s《》“”\"']", "");
+    }
+
+    private String trimAfterLawSuffix(String rawLawName) {
+        if (rawLawName == null) {
+            return null;
+        }
+        // 如果在法典/法/条例后还有“第一章第一条”等尾巴，截断到后缀结束
+        String[] suffixes = new String[]{"法典", "条例", "规定", "办法", "规章", "解释", "法"};
+        for (String s : suffixes) {
+            int idx = rawLawName.indexOf(s);
+            if (idx > 0) {
+                return rawLawName.substring(0, idx + s.length());
+            }
+        }
+        return rawLawName;
     }
 
     private String findFirstGroup(String text, Pattern pattern) {
