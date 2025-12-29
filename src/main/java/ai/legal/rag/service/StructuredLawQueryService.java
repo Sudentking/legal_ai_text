@@ -78,10 +78,15 @@ public class StructuredLawQueryService {
         boolean askFull = FULL_PATTERN.matcher(normalized).find();
         boolean general = GENERAL_PATTERN.matcher(normalized).find();
 
-        // 若只有法律名称没有章/条/全文关键词，降级为全文查询
+        // 若只有法律名称没有章/条/全文关键词，通常走全文查询；但若问题还带其他描述（如“关于人权”），则视为语义检索而非结构化
         boolean hasStructureKeyword = chapter != null || article != null || partOrSection != null || askFull || general;
         if (!hasStructureKeyword) {
-            askFull = true;
+            String remaining = normalized.replaceFirst(Pattern.quote(rawLawName), "");
+            if (remaining == null || remaining.isEmpty()) {
+                askFull = true; // 仅法名 -> 全文查询
+            } else {
+                return null; // 法名 + 其他描述（无结构关键词） -> 走 RAG 语义检索
+            }
         }
 
         StructuredQuery query = new StructuredQuery();
