@@ -56,17 +56,16 @@ public class AdditionalManualTest {
         System.out.println(pb.buildUserPrompt("第1条如何适用？", "检索到的条文......"));
     }
 
-    // 可选：真实调用 DeepSeek（需环境变量 DEEPSEEK_API_KEY）
+    // 可选：真实调用 DeepSeek（需在 application.properties 配置 deepseek.api.key）
     private static void testDeepSeekOptional() {
-        String apiKey = System.getenv("DEEPSEEK_API_KEY");
-        if (apiKey == null || apiKey.isEmpty()) {
-            System.out.println("\n== DeepSeek skipped: missing DEEPSEEK_API_KEY ==");
-            return;
-        }
         System.out.println("\n== DeepSeek live call ==");
-        DeepSeekLlmClient client = new DeepSeekLlmClient(apiKey);
-        String resp = client.generate("你是法律助手", "请简述合同的基本要素。");
-        System.out.println(resp);
+        try {
+            DeepSeekLlmClient client = new DeepSeekLlmClient();
+            String resp = client.generate("你是法律助手", "请简述合同的基本要素。");
+            System.out.println(resp);
+        } catch (Exception e) {
+            System.out.println("DeepSeek 调用失败或未配置，跳过。原因: " + e.getMessage());
+        }
     }
 
     private static List<LegalEmbedding> sampleEmbeddings() {
