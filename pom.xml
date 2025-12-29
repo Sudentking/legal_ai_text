@@ -45,5 +45,11 @@
             <artifactId>pdfbox</artifactId>
             <version>2.0.30</version>
         </dependency>
+        <!-- 日志实现，避免运行时 Log4j2 无核心实现的警告 -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>2.21.1</version>
+        </dependency>
     </dependencies>
 </project>
