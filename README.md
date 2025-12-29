@@ -13,6 +13,9 @@
 - `ai/legal/service/VectorSearchService.java`：封装向量插入/查询。
 - `ai/legal/service/importer/*`：增量导入管道（策略、结果统计、分片服务、入口）。
 - `ai/legal/App.java`：示例插入与 Top-K 查询。
+- `ai/legal/rag/prompt/LegalRagPromptBuilder.java`：RAG 场景 Prompt 拼装。
+- `ai/legal/rag/service/LegalRagQaService.java`：RAG 问答闭环（向量检索 + Prompt + LLM 调用）。
+- `ai/legal/rag/service/LlmClient.java`：LLM 客户端接口，占位便于接入厂商 SDK。
 
 ## 依赖与环境
 - JDK 17
@@ -55,6 +58,10 @@ mvn clean package
 - `LawTextChunkService.processLawText(...)`：对单条条文分片 → 生成占位向量 → 写 PG `legal_embedding` → 写 MySQL `law_text_chunk`（vector_id = embedding.id），统计成功/失败。
 - `LawTextToVectorImporter`：遍历待处理条文，汇总成功/失败/跳过 ID 与耗时。
 - 向量生成目前为占位算法，后续接入真实 1536 维模型/API 时替换 `generateEmbedding`。
+
+## RAG 问答闭环
+- `LegalRagQaService.answer(userQuestion)`：将问题生成 1536 维占位向量 → `searchTopK` 取 5 条上下文 → `LegalRagPromptBuilder.buildPrompt` 拼装 Prompt → 调用 `LlmClient.chat` 返回回复。
+- `LlmClient` 为大模型接口占位，按需实现（如 HTTP 调用厂商 API）。
 
 ## 结果验证
 - PostgreSQL（legal_vector）：查看新增向量  
