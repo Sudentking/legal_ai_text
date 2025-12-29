@@ -14,8 +14,11 @@
 - `ai/legal/service/importer/*`：增量导入管道（策略、结果统计、分片服务、入口）。
 - `ai/legal/App.java`：示例插入与 Top-K 查询。
 - `ai/legal/rag/prompt/LegalRagPromptBuilder.java`：RAG 场景 Prompt 拼装。
+- `ai/legal/rag/prompt/ClarificationPromptBuilder.java`：不足以作答时的补充事实提问 Prompt。
 - `ai/legal/rag/service/LegalRagQaService.java`：RAG 问答闭环（向量检索 + Prompt + LLM 调用）。
 - `ai/legal/rag/service/LlmClient.java`：LLM 客户端接口，占位便于接入厂商 SDK。
+- `ai/legal/rag/intent/*`：意图识别（关键词规则）。
+- `ai/legal/rag/agent/LegalAgentService.java`：Agent 主流程（意图识别 → 决策 → RAG → LLM）。
 
 ## 依赖与环境
 - JDK 17
@@ -62,6 +65,7 @@ mvn clean package
 ## RAG 问答闭环
 - `LegalRagQaService.answer(userQuestion)`：将问题生成 1536 维占位向量 → `searchTopK` 取 5 条上下文 → `LegalRagPromptBuilder.buildPrompt` 拼装 Prompt → 调用 `LlmClient.chat` 返回回复。
 - `LlmClient` 为大模型接口占位，按需实现（如 HTTP 调用厂商 API）。
+- `LegalAgentService.answer(userQuestion)`：先用 `LegalIntentClassifier` 判断意图，若信息不足则用 `ClarificationPromptBuilder` 引导补充事实，否则走 `LegalRagQaService` 的标准 RAG 流程。
 
 ## 结果验证
 - PostgreSQL（legal_vector）：查看新增向量  
