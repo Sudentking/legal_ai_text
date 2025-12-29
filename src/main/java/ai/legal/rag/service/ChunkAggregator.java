@@ -21,7 +21,7 @@ public class ChunkAggregator {
         }
         Map<Long, List<LegalEmbedding>> grouped = embeddings.stream()
                 .filter(Objects::nonNull)
-                .collect(Collectors.groupingBy(e -> e.getLawId() == null ? -1L : e.getLawId(), LinkedHashMap::new, Collectors.toList()));
+                .collect(Collectors.groupingBy(LegalEmbedding::getLawId, LinkedHashMap::new, Collectors.toList()));
 
         List<AggregatedLawContext> result = new ArrayList<>();
         for (Map.Entry<Long, List<LegalEmbedding>> entry : grouped.entrySet()) {

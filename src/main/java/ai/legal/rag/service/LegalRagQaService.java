@@ -42,12 +42,26 @@ public class LegalRagQaService {
      * 两阶段：先整理法律依据，再做受控法律分析与建议。
      */
     public String answerWithReasoning(String userQuestion) {
+        return answerWithReasoning(userQuestion, false, "");
+    }
+
+    /**
+     * 两阶段：先整理法律依据，再做受控法律分析与建议，可告知事实是否足够。
+     */
+    public String answerWithReasoning(String userQuestion, boolean factsSufficient) {
+        return answerWithReasoning(userQuestion, factsSufficient, "");
+    }
+
+    /**
+     * 两阶段：先整理法律依据，再做受控法律分析与建议，并传入已确认事实（conversation history 汇总）。
+     */
+    public String answerWithReasoning(String userQuestion, boolean factsSufficient, String historyFacts) {
         List<AggregatedLawContext> contexts = retrieveContexts(userQuestion);
         // 第一阶段：法律依据
         String basisPrompt = LegalBasisPromptBuilder.buildPrompt(userQuestion, contexts);
         String legalBasis = llmClient.chat(basisPrompt);
         // 第二阶段：受控法律分析
-        String analysisPrompt = LegalAnalysisPromptBuilder.buildPrompt(userQuestion, legalBasis, contexts);
+        String analysisPrompt = LegalAnalysisPromptBuilder.buildPrompt(userQuestion, legalBasis, contexts, factsSufficient, historyFacts);
         String analysis = llmClient.chat(analysisPrompt);
 
         StringBuilder result = new StringBuilder();
