@@ -42,6 +42,36 @@ public class LawTextDao {
     }
 
     /**
+     * 插入一条 law_text 记录。
+     *
+     * @param lawText 条文
+     * @return 生成的自增主键，失败返回 -1
+     */
+    public long insertLawText(LawText lawText) {
+        String sql = "INSERT INTO law_text (law_code, law_title, article_number, full_text, effective_date) VALUES (?, ?, ?, ?, ?)";
+        try (Connection connection = getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql, PreparedStatement.RETURN_GENERATED_KEYS)) {
+            statement.setString(1, lawText.getLawCode());
+            statement.setString(2, lawText.getLawTitle());
+            statement.setString(3, lawText.getArticleNumber());
+            statement.setString(4, lawText.getFullText());
+            statement.setDate(5, lawText.getEffectiveDate());
+            int affected = statement.executeUpdate();
+            if (affected > 0) {
+                try (ResultSet keys = statement.getGeneratedKeys()) {
+                    if (keys.next()) {
+                        return keys.getLong(1);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("插入 law_text 失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return -1L;
+    }
+
+    /**
      * 获取尚未生成切片的 law_text 记录（增量导入）。
      *
      * @return LawText 列表

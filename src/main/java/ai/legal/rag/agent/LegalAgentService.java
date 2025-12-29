@@ -32,11 +32,23 @@ public class LegalAgentService {
      */
     public String answer(String userQuestion) {
         LegalIntentResult intentResult = intentClassifier.classify(userQuestion);
-        if (intentResult.getType() == LegalIntentType.NEEDS_FACTS) {
+        // 1) 法条原文查询：视为信息充分，直接进入 RAG
+        if (intentResult.getType() == LegalIntentType.LAW_TEXT_QUERY) {
+            // 设计说明：用户明确指定法律名称/章节/条款，属于可直接回答型查询，不应阻断。
+            return ragQaService.answer(userQuestion);
+        }
+        // 2) 责任/条件判断：需要事实支撑，优先触发追问
+        if (intentResult.getType() == LegalIntentType.LEGAL_LIABILITY
+                || intentResult.getType() == LegalIntentType.LEGAL_CONDITION_CHECK) {
+            String prompt = ClarificationPromptBuilder.build(userQuestion, "责任或条件判断需要明确主体、行为、时间、后果等事实");
+            return llmClient.chat(prompt);
+        }
+        // 3) 置信度不足或显式不足：兜底追问
+        if (intentResult.getType() == LegalIntentType.NEEDS_FACTS || intentResult.getConfidence() < 0.6) {
             String prompt = ClarificationPromptBuilder.build(userQuestion, intentResult.getReason());
             return llmClient.chat(prompt);
         }
-        // 走标准 RAG 闭环
+        // 4) 解释/适用范围/流程等：默认认为信息足够，可直接进入 RAG
         return ragQaService.answer(userQuestion);
     }
 }
