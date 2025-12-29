@@ -18,19 +18,33 @@ public class LawTextToVectorImporter {
      * @param args 启动参数（无需传入）
      */
     public static void main(String[] args) {
+        ImportPolicy policy = ImportPolicy.defaultPolicy();
         LawTextDao lawTextDao = new LawTextDao();
         VectorSearchService vectorSearchService = new VectorSearchService(new LegalEmbeddingDao());
         LawTextChunkService chunkService = new LawTextChunkService(vectorSearchService, lawTextDao);
 
         long start = System.currentTimeMillis();
-        List<LawText> lawTexts = lawTextDao.findAll();
+        List<LawText> lawTexts = policy.isIncremental() ? lawTextDao.findUnprocessed() : lawTextDao.findAll();
         System.out.println("待处理条文数量: " + lawTexts.size());
 
+        ImportResult importResult = new ImportResult();
         for (LawText lawText : lawTexts) {
-            chunkService.processLawText(lawText);
+            LawTextProcessResult result = chunkService.processLawText(lawText, policy);
+            importResult.add(result);
         }
 
         long costMs = System.currentTimeMillis() - start;
-        System.out.println("导入完成，处理总数: " + lawTexts.size() + "，耗时 " + costMs + " ms");
+        importResult.setElapsedMs(costMs);
+        System.out.println("导入完成，处理总数: " + importResult.getTotal()
+                + "，成功: " + importResult.getSuccess()
+                + "，失败: " + importResult.getFailed()
+                + "，跳过: " + importResult.getSkipped()
+                + "，耗时 " + importResult.getElapsedMs() + " ms");
+        if (!importResult.getFailedIds().isEmpty()) {
+            System.out.println("失败条文ID: " + importResult.getFailedIds());
+        }
+        if (!importResult.getSkippedIds().isEmpty()) {
+            System.out.println("跳过条文ID: " + importResult.getSkippedIds());
+        }
     }
 }

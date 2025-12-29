@@ -6,6 +6,8 @@ import ai.legal.model.LawTextChunk;
 import ai.legal.model.LegalEmbedding;
 import ai.legal.service.VectorSearchService;
 import ai.legal.util.TextSplitter;
+import ai.legal.service.importer.ImportPolicy;
+import ai.legal.service.importer.LawTextProcessResult;
 
 import java.sql.SQLException;
 import java.util.List;
@@ -32,17 +34,28 @@ public class LawTextChunkService {
      *
      * @param lawText 原始条文
      */
-    public void processLawText(LawText lawText) {
+    public LawTextProcessResult processLawText(LawText lawText, ImportPolicy policy) {
         if (lawText == null) {
-            return;
+            return new LawTextProcessResult(0L, true, false, 0, 0, "lawText 为空");
         }
-        List<LawTextChunk> chunks = TextSplitter.splitToChunks(lawText, DEFAULT_CHUNK_SIZE);
+        long documentId = lawText.getId();
+        boolean skipIfProcessed = policy != null && policy.isSkipIfProcessed();
+        int chunkSize = policy != null ? policy.getChunkSize() : DEFAULT_CHUNK_SIZE;
+
+        if (skipIfProcessed && lawTextDao.hasChunks(documentId)) {
+            System.out.println("已存在切片，跳过 law_text id=" + documentId);
+            return new LawTextProcessResult(documentId, true, false, 0, 0, "已处理");
+        }
+
+        List<LawTextChunk> chunks = TextSplitter.splitToChunks(lawText, chunkSize);
         if (chunks.isEmpty()) {
             System.out.println("跳过空文本，ID=" + lawText.getId());
-            return;
+            return new LawTextProcessResult(documentId, true, false, 0, 0, "空文本");
         }
 
         System.out.println("开始处理 law_text id=" + lawText.getId() + "，分片数量=" + chunks.size());
+        int successChunks = 0;
+        int failedChunks = 0;
         for (LawTextChunk chunk : chunks) {
             try {
                 double[] embeddingVector = generateEmbedding(chunk.getChunkText());
@@ -63,16 +76,22 @@ public class LawTextChunkService {
                         + ", chunk_order=" + chunk.getChunkOrder()
                         + ", vector_id=" + chunk.getVectorId()
                         + ", chunk_id=" + chunkId);
+                successChunks++;
             } catch (SQLException e) {
                 System.err.println("处理分片失败, document_id=" + chunk.getDocumentId()
                         + ", chunk_order=" + chunk.getChunkOrder() + ": " + e.getMessage());
                 e.printStackTrace();
+                failedChunks++;
             } catch (Exception e) {
                 System.err.println("处理分片出现异常, document_id=" + chunk.getDocumentId()
                         + ", chunk_order=" + chunk.getChunkOrder() + ": " + e.getMessage());
                 e.printStackTrace();
+                failedChunks++;
             }
         }
+        boolean success = failedChunks == 0 && successChunks > 0;
+        String message = success ? "全部成功" : "存在失败";
+        return new LawTextProcessResult(documentId, false, success, successChunks, failedChunks, message);
     }
 
     /**

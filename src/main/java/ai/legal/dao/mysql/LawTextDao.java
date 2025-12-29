@@ -42,6 +42,52 @@ public class LawTextDao {
     }
 
     /**
+     * 获取尚未生成切片的 law_text 记录（增量导入）。
+     *
+     * @return LawText 列表
+     */
+    public List<LawText> findUnprocessed() {
+        List<LawText> list = new ArrayList<>();
+        String sql = "SELECT t.id, t.law_code, t.law_title, t.article_number, t.full_text, t.effective_date, t.created_at, t.updated_at " +
+                "FROM law_text t " +
+                "WHERE NOT EXISTS (SELECT 1 FROM law_text_chunk c WHERE c.document_id = t.id)";
+        try (Connection connection = getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql);
+             ResultSet rs = statement.executeQuery()) {
+
+            while (rs.next()) {
+                LawText lawText = mapRow(rs);
+                list.add(lawText);
+            }
+        } catch (SQLException e) {
+            System.err.println("查询未处理 law_text 失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    /**
+     * 判断指定条文是否已存在切片。
+     *
+     * @param documentId law_text.id
+     * @return 是否已有切片
+     */
+    public boolean hasChunks(long documentId) {
+        String sql = "SELECT 1 FROM law_text_chunk WHERE document_id = ? LIMIT 1";
+        try (Connection connection = getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, documentId);
+            try (ResultSet rs = statement.executeQuery()) {
+                return rs.next();
+            }
+        } catch (SQLException e) {
+            System.err.println("检查切片存在性失败, document_id=" + documentId + ": " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    /**
      * 插入一条切片记录。
      *
      * @param chunk 切片对象，vectorId 需预先填充
