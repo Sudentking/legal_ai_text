@@ -1,0 +1,85 @@
+# legal-ai-system
+
+纯 Java + JDBC 的法律条文向量化与检索示例，使用 MySQL 作为业务库、PostgreSQL（pgvector）作为向量库。当前实现了条文切片、向量生成（占位算法）、向量入库及增量导入管道。
+
+## 目录结构
+- `src/main/resources/application.properties`：PostgreSQL 与 MySQL 连接配置。
+- `ai/legal/config/DatabaseConfig.java`：PostgreSQL 连接。
+- `ai/legal/config/MySqlConfig.java`：MySQL 连接。
+- `ai/legal/model/*`：数据模型（LawText、LawTextChunk、LegalEmbedding）。
+- `ai/legal/dao/mysql/LawTextDao.java`：读取 `law_text`、写入 `law_text_chunk`。
+- `ai/legal/dao/LegalEmbeddingDao.java`：向 PostgreSQL `legal_embedding` 插入与查询。
+- `ai/legal/util/TextSplitter.java`：300–500 字分片，按段落聚合后切分。
+- `ai/legal/service/VectorSearchService.java`：封装向量插入/查询。
+- `ai/legal/service/importer/*`：增量导入管道（策略、结果统计、分片服务、入口）。
+- `ai/legal/App.java`：示例插入与 Top-K 查询。
+
+## 依赖与环境
+- JDK 17
+- Maven
+- MySQL（库 `legal_dev`，表 `law_text`、`law_text_chunk` 已存在）
+- PostgreSQL 16 + pgvector（库 `legal_vector`，表 `legal_embedding` 已存在，向量维度 1536）
+
+## 配置
+编辑 `src/main/resources/application.properties`：
+```properties
+# PostgreSQL
+db.url=jdbc:postgresql://localhost:5432/legal_vector
+db.user=postgres
+db.password=postgres
+# MySQL
+mysql.url=jdbc:mysql://localhost:3306/legal_dev?useSSL=false&serverTimezone=UTC
+mysql.user=root
+mysql.password=root123456
+```
+
+## 构建
+```bash
+mvn clean package
+```
+
+## 运行
+- 批量导入（增量、跳过已处理）：  
+  ```bash
+  java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.service.importer.LawTextToVectorImporter
+  ```
+- 修改策略（全量且不跳过）：将入口中的 `ImportPolicy.defaultPolicy()` 替换为 `new ImportPolicy(false, false, 400)` 再运行。
+- 单条示例：  
+  ```bash
+  java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.App
+  ```
+
+## 导入逻辑概述
+- `ImportPolicy`：控制增量/跳过已处理、分片长度。
+- `LawTextDao.findUnprocessed()`：仅取未切片的条文；`hasChunks()` 判重。
+- `LawTextChunkService.processLawText(...)`：对单条条文分片 → 生成占位向量 → 写 PG `legal_embedding` → 写 MySQL `law_text_chunk`（vector_id = embedding.id），统计成功/失败。
+- `LawTextToVectorImporter`：遍历待处理条文，汇总成功/失败/跳过 ID 与耗时。
+- 向量生成目前为占位算法，后续接入真实 1536 维模型/API 时替换 `generateEmbedding`。
+
+## 结果验证
+- PostgreSQL（legal_vector）：查看新增向量  
+  ```sql
+  SELECT id, law_id, article_no, chunk_index, source, created_at
+  FROM legal_embedding
+  ORDER BY id DESC
+  LIMIT 20;
+  ```
+- MySQL（legal_dev）：查看切片与 vector_id  
+  ```sql
+  SELECT id, document_id, vector_id, chunk_order, LEFT(chunk_text, 50) AS preview, created_at
+  FROM law_text_chunk
+  ORDER BY id DESC
+  LIMIT 20;
+
+  SELECT document_id, COUNT(*) AS chunk_count
+  FROM law_text_chunk
+  GROUP BY document_id
+  ORDER BY document_id DESC;
+  ```
+确认 `law_text_chunk.vector_id` 等于 PostgreSQL `legal_embedding.id`，分片数量与切分一致。
+
+## 约束提醒
+- 仅使用 Java 标准库 + JDBC；禁止引入 Spring/JPA/Lombok 等。
+- 所有 SQL 使用 PreparedStatement。
+- 不修改既有表结构，向量维度固定 1536。
+- 后续每次代码更新请同步维护本 README。 
