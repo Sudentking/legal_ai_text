@@ -118,6 +118,38 @@ public class LawTextDao {
     }
 
     /**
+     * 按法律名称 + 关键词检索条文（全文 LIKE 匹配），用于法条内关键词查询。
+     */
+    public List<LawText> searchByLawAndKeyword(String lawName, String keyword, int limit) {
+        List<LawText> list = new ArrayList<>();
+        if (keyword == null || keyword.isBlank()) {
+            return list;
+        }
+        String sql = "SELECT id, law_code, law_title, article_number, full_text, effective_date, created_at, updated_at " +
+                "FROM law_text WHERE (law_code LIKE ? OR law_title LIKE ?) AND (full_text LIKE ? OR article_number LIKE ?) " +
+                "ORDER BY id ASC LIMIT ?";
+        String likeName = "%" + lawName + "%";
+        String likeKw = "%" + keyword + "%";
+        try (Connection connection = getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, likeName);
+            statement.setString(2, likeName);
+            statement.setString(3, likeKw);
+            statement.setString(4, likeKw);
+            statement.setInt(5, limit <= 0 ? 10 : limit);
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    list.add(mapRow(rs));
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("按法律名称+关键词查询 law_text 失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    /**
      * 插入一条 law_text 记录。
      *
      * @param lawText 条文

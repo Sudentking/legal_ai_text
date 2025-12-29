@@ -43,6 +43,13 @@ public class StructuredLawQueryService {
                 return formatLawTexts(byArticle, "未在数据库找到对应条文");
             }
         }
+        if (query.keyword != null && !query.keyword.isBlank()) {
+            List<LawText> byKeyword = lawTextDao.searchByLawAndKeyword(query.lawName, query.keyword, 10);
+            if (!byKeyword.isEmpty()) {
+                return formatLawTexts(byKeyword, "未在数据库找到包含关键词的条文");
+            }
+            return "未在数据库找到包含关键词【" + query.keyword + "】的条文，请尝试调整关键词。";
+        }
         if (query.chapter != null) {
             List<LawText> byChapter = lawTextDao.findByLawNameAndChapter(query.lawName, query.chapter);
             if (!byChapter.isEmpty()) {
@@ -85,7 +92,11 @@ public class StructuredLawQueryService {
             if (remaining == null || remaining.isEmpty()) {
                 askFull = true; // 仅法名 -> 全文查询
             } else {
-                return null; // 法名 + 其他描述（无结构关键词） -> 走 RAG 语义检索
+                StructuredQuery query = new StructuredQuery();
+                query.lawName = lawName;
+                query.keyword = extractKeyword(remaining);
+                query.askFullLaw = false;
+                return query;
             }
         }
 
@@ -123,6 +134,19 @@ public class StructuredLawQueryService {
         return rawLawName;
     }
 
+    private String extractKeyword(String text) {
+        if (text == null) {
+            return null;
+        }
+        // 去掉常见填充词，保留核心关键词
+        String cleaned = text.replaceAll("(关于|相关|的|有哪些|什么|哪几条|哪条|条文|法条|内容|规定|问题|吗|呢|啊)", "");
+        cleaned = cleaned.replaceAll("[，。！？?、]", "");
+        if (cleaned.isBlank()) {
+            return text;
+        }
+        return cleaned;
+    }
+
     private String findFirstGroup(String text, Pattern pattern) {
         Matcher m = pattern.matcher(text);
         if (m.find()) {
@@ -154,6 +178,7 @@ public class StructuredLawQueryService {
         String lawName;
         String chapter;
         String article;
+        String keyword;
         boolean askFullLaw;
     }
 }
