@@ -13,6 +13,7 @@ import ai.legal.service.importer.ImportPolicy;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
+import java.util.Scanner;
 
 /**
  * 法律法规导入模块：从 Word/PDF/TXT 读取 → 解析条文 → 写入 MySQL → 切分 + 向量入库。
@@ -67,15 +68,41 @@ public class LawDocumentImportService {
     }
 
     /**
-     * 命令行入口示例。
-     *
-     * @param args 参数：文件路径
+     * 命令行入口：支持 args 文件路径，也支持交互式多次导入。
      */
     public static void main(String[] args) {
-        if (args.length < 1) {
-            System.out.println("用法: java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.importer.LawDocumentImportService <文件路径>");
+        LawDocumentImportService service = new LawDocumentImportService();
+        // 优先处理传入的参数，方便脚本化调用
+        if (args.length > 0) {
+            service.importFromFile(args[0]);
             return;
         }
-        new LawDocumentImportService().importFromFile(args[0]);
+        // 交互式导入，持续等待用户输入
+        System.out.println("法律文档导入入口已启动。");
+        System.out.println("请输入要导入的法律文档路径（Word/PDF/TXT），输入 exit/quit 退出：");
+        try (Scanner scanner = new Scanner(System.in)) {
+            while (true) {
+                System.out.print("> ");
+                String line = scanner.nextLine();
+                if (line == null) {
+                    continue;
+                }
+                String path = line.trim();
+                if (path.equalsIgnoreCase("exit") || path.equalsIgnoreCase("quit")) {
+                    System.out.println("已退出。");
+                    break;
+                }
+                if (path.isEmpty()) {
+                    continue;
+                }
+                File f = new File(path);
+                String name = f.getName().toLowerCase();
+                if (!(name.endsWith(".docx") || name.endsWith(".pdf") || name.endsWith(".txt"))) {
+                    System.err.println("不支持的文件格式，仅支持 .docx/.pdf/.txt");
+                    continue;
+                }
+                service.importFromFile(path);
+            }
+        }
     }
 }
