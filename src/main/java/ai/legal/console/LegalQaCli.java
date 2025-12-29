@@ -1,11 +1,13 @@
 package ai.legal.console;
 
 import ai.legal.dao.LegalEmbeddingDao;
+import ai.legal.dao.mysql.LawTextDao;
 import ai.legal.rag.agent.LegalAgentService;
 import ai.legal.rag.intent.LegalIntentClassifier;
 import ai.legal.rag.service.DeepSeekLlmClient;
 import ai.legal.rag.service.LegalRagQaService;
 import ai.legal.rag.service.LlmClient;
+import ai.legal.rag.service.StructuredLawQueryService;
 import ai.legal.service.VectorSearchService;
 
 import java.util.Scanner;
@@ -24,7 +26,8 @@ public class LegalQaCli {
         LlmClient llmClient = createLlmClient();
         VectorSearchService vectorSearchService = new VectorSearchService(new LegalEmbeddingDao());
         LegalRagQaService ragQaService = new LegalRagQaService(vectorSearchService, llmClient);
-        LegalAgentService agentService = new LegalAgentService(new LegalIntentClassifier(), ragQaService, llmClient);
+        StructuredLawQueryService structuredLawQueryService = new StructuredLawQueryService(new LawTextDao());
+        LegalAgentService agentService = new LegalAgentService(new LegalIntentClassifier(), ragQaService, structuredLawQueryService, llmClient);
 
         try (Scanner scanner = new Scanner(System.in)) {
             while (true) {

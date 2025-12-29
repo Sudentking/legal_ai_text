@@ -5,6 +5,7 @@ import ai.legal.rag.intent.LegalIntentResult;
 import ai.legal.rag.intent.LegalIntentType;
 import ai.legal.rag.prompt.ClarificationPromptBuilder;
 import ai.legal.rag.service.LegalRagQaService;
+import ai.legal.rag.service.StructuredLawQueryService;
 import ai.legal.rag.service.LlmClient;
 
 /**
@@ -14,13 +15,16 @@ public class LegalAgentService {
 
     private final LegalIntentClassifier intentClassifier;
     private final LegalRagQaService ragQaService;
+    private final StructuredLawQueryService structuredLawQueryService;
     private final LlmClient llmClient;
 
     public LegalAgentService(LegalIntentClassifier intentClassifier,
                              LegalRagQaService ragQaService,
+                             StructuredLawQueryService structuredLawQueryService,
                              LlmClient llmClient) {
         this.intentClassifier = intentClassifier;
         this.ragQaService = ragQaService;
+        this.structuredLawQueryService = structuredLawQueryService;
         this.llmClient = llmClient;
     }
 
@@ -31,11 +35,16 @@ public class LegalAgentService {
      * @return 模型回答或澄清问题
      */
     public String answer(String userQuestion) {
+        // 0) 优先：命中“法律名称 + 章/条/全文”结构化查询，直接返回数据库原文
+        String structured = structuredLawQueryService.answerIfStructured(userQuestion);
+        if (structured != null) {
+            return structured;
+        }
         LegalIntentResult intentResult = intentClassifier.classify(userQuestion);
         // 1) 法条原文查询：视为信息充分，直接进入 RAG
         if (intentResult.getType() == LegalIntentType.LAW_TEXT_QUERY) {
-            // 设计说明：用户明确指定法律名称/章节/条款，属于可直接回答型查询，不应阻断。
-            return ragQaService.answer(userQuestion);
+            // 设计说明：用户明确指定法律名称/章节/条款，属于可直接回答型查询，不应阻断。直接做两阶段法律推理。
+            return ragQaService.answerWithReasoning(userQuestion);
         }
         // 2) 责任/条件判断：需要事实支撑，优先触发追问
         if (intentResult.getType() == LegalIntentType.LEGAL_LIABILITY
@@ -49,6 +58,6 @@ public class LegalAgentService {
             return llmClient.chat(prompt);
         }
         // 4) 解释/适用范围/流程等：默认认为信息足够，可直接进入 RAG
-        return ragQaService.answer(userQuestion);
+        return ragQaService.answerWithReasoning(userQuestion);
     }
 }

@@ -42,6 +42,82 @@ public class LawTextDao {
     }
 
     /**
+     * 根据法律名称与条号查询条文（用于结构化法条查询）。
+     */
+    public List<LawText> findByLawNameAndArticle(String lawName, String articleKeyword) {
+        List<LawText> list = new ArrayList<>();
+        String sql = "SELECT id, law_code, law_title, article_number, full_text, effective_date, created_at, updated_at " +
+                "FROM law_text WHERE (law_code LIKE ? OR law_title LIKE ?) AND article_number LIKE ? ORDER BY id ASC";
+        String likeName = "%" + lawName + "%";
+        String likeArticle = "%" + articleKeyword + "%";
+        try (Connection connection = getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, likeName);
+            statement.setString(2, likeName);
+            statement.setString(3, likeArticle);
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    list.add(mapRow(rs));
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("按法律名称+条号查询 law_text 失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    /**
+     * 根据法律名称与章节查询条文（用于结构化法条查询）。
+     */
+    public List<LawText> findByLawNameAndChapter(String lawName, String chapterKeyword) {
+        List<LawText> list = new ArrayList<>();
+        String sql = "SELECT id, law_code, law_title, article_number, full_text, effective_date, created_at, updated_at " +
+                "FROM law_text WHERE (law_code LIKE ? OR law_title LIKE ?) AND law_title LIKE ? ORDER BY id ASC";
+        String likeName = "%" + lawName + "%";
+        String likeChapter = "%" + chapterKeyword + "%";
+        try (Connection connection = getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, likeName);
+            statement.setString(2, likeName);
+            statement.setString(3, likeChapter);
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    list.add(mapRow(rs));
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("按法律名称+章节查询 law_text 失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    /**
+     * 根据法律名称查询全部条文。
+     */
+    public List<LawText> findByLawName(String lawName) {
+        List<LawText> list = new ArrayList<>();
+        String sql = "SELECT id, law_code, law_title, article_number, full_text, effective_date, created_at, updated_at " +
+                "FROM law_text WHERE law_code LIKE ? OR law_title LIKE ? ORDER BY id ASC";
+        String likeName = "%" + lawName + "%";
+        try (Connection connection = getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, likeName);
+            statement.setString(2, likeName);
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    list.add(mapRow(rs));
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("按法律名称查询 law_text 失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    /**
      * 插入一条 law_text 记录。
      *
      * @param lawText 条文
