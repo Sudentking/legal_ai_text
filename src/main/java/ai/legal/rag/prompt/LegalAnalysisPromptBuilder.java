@@ -1,6 +1,6 @@
 package ai.legal.rag.prompt;
 
-import ai.legal.model.LegalEmbedding;
+import ai.legal.rag.service.ChunkAggregator.AggregatedLawContext;
 
 import java.util.List;
 
@@ -15,7 +15,7 @@ public class LegalAnalysisPromptBuilder {
     /**
      * 构建受控法律分析 Prompt，要求引用法律依据、克制表述，并添加免责声明。
      */
-    public static String buildPrompt(String userQuestion, String legalBasis, List<LegalEmbedding> contexts) {
+    public static String buildPrompt(String userQuestion, String legalBasis, List<AggregatedLawContext> contexts) {
         StringBuilder sb = new StringBuilder();
         sb.append("角色：你是法律智能助手，需在提供的法律依据框架内做审慎分析与建议。\n");
         sb.append("输入：用户问题 + 已整理的法律依据（禁止添加新法律）。\n");
@@ -31,13 +31,10 @@ public class LegalAnalysisPromptBuilder {
         sb.append("检索到的法律条文（仅供引用，不得新增条文）：\n");
         if (contexts != null) {
             for (int i = 0; i < contexts.size(); i++) {
-                LegalEmbedding item = contexts.get(i);
-                sb.append(i + 1).append(") ");
-                sb.append("law_id=").append(item.getLawId());
-                if (item.getArticleNo() != null) {
-                    sb.append("，条文编号=").append(item.getArticleNo());
-                }
-                sb.append("，片段序号=").append(item.getChunkIndex()).append("\n");
+                AggregatedLawContext item = contexts.get(i);
+                sb.append(i + 1).append(") law_id=").append(item.getLawId())
+                        .append("，条文范围=").append(item.getArticleRange())
+                        .append("，覆盖说明=").append(item.getCoverageNote()).append("\n");
                 sb.append(item.getContent()).append("\n\n");
             }
         }

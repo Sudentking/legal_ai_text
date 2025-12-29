@@ -17,6 +17,8 @@ public class StructuredLawQueryService {
     private static final Pattern LAW_NAME_PATTERN = Pattern.compile("([\\p{IsHan}A-Za-z0-9]{2,30}(法典|法|条例|规定|办法|规章|解释))");
     private static final Pattern CHAPTER_PATTERN = Pattern.compile("第([一二三四五六七八九十百千0-9]+)章");
     private static final Pattern ARTICLE_PATTERN = Pattern.compile("第([一二三四五六七八九十百千0-9]+)条");
+    private static final Pattern PART_PATTERN = Pattern.compile("第([一二三四五六七八九十百千0-9]+)(编|节)");
+    private static final Pattern GENERAL_PATTERN = Pattern.compile("(总则|附则)");
     private static final Pattern FULL_PATTERN = Pattern.compile("(全文|全部内容|全部条文|整部|所有条文|全章)");
 
     private final LawTextDao lawTextDao;
@@ -68,11 +70,13 @@ public class StructuredLawQueryService {
         }
         String lawName = lawMatcher.group(0);
         String chapter = findFirstGroup(normalized, CHAPTER_PATTERN);
+        String partOrSection = findFirstGroup(normalized, PART_PATTERN);
         String article = findFirstGroup(normalized, ARTICLE_PATTERN);
         boolean askFull = FULL_PATTERN.matcher(normalized).find();
+        boolean general = GENERAL_PATTERN.matcher(normalized).find();
 
-        // 需要出现条/章/全文任一才视为结构化查询
-        if (chapter == null && article == null && !askFull) {
+        // 需要出现条/章/编/节/总则/全文任一才视为结构化查询
+        if (chapter == null && article == null && partOrSection == null && !askFull && !general) {
             return null;
         }
 
@@ -80,6 +84,12 @@ public class StructuredLawQueryService {
         query.lawName = lawName;
         query.chapter = chapter == null ? null : "第" + chapter + "章";
         query.article = article == null ? null : "第" + article + "条";
+        if (partOrSection != null) {
+            query.chapter = "第" + partOrSection + (normalized.contains("节") ? "节" : "编");
+        }
+        if (general && query.chapter == null) {
+            query.chapter = "总则";
+        }
         query.askFullLaw = askFull;
         return query;
     }

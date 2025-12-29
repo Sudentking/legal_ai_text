@@ -4,6 +4,7 @@ import ai.legal.model.LegalEmbedding;
 import ai.legal.rag.prompt.LegalRagPromptBuilder;
 import ai.legal.rag.prompt.LegalBasisPromptBuilder;
 import ai.legal.rag.prompt.LegalAnalysisPromptBuilder;
+import ai.legal.rag.service.ChunkAggregator.AggregatedLawContext;
 import ai.legal.service.VectorSearchService;
 
 import java.util.List;
@@ -32,7 +33,7 @@ public class LegalRagQaService {
      * @return 模型回答
      */
     public String answer(String userQuestion) {
-        List<LegalEmbedding> contexts = retrieveContexts(userQuestion);
+        List<AggregatedLawContext> contexts = retrieveContexts(userQuestion);
         String prompt = LegalRagPromptBuilder.buildPrompt(userQuestion, contexts);
         return llmClient.chat(prompt);
     }
@@ -41,7 +42,7 @@ public class LegalRagQaService {
      * 两阶段：先整理法律依据，再做受控法律分析与建议。
      */
     public String answerWithReasoning(String userQuestion) {
-        List<LegalEmbedding> contexts = retrieveContexts(userQuestion);
+        List<AggregatedLawContext> contexts = retrieveContexts(userQuestion);
         // 第一阶段：法律依据
         String basisPrompt = LegalBasisPromptBuilder.buildPrompt(userQuestion, contexts);
         String legalBasis = llmClient.chat(basisPrompt);
@@ -55,9 +56,10 @@ public class LegalRagQaService {
         return result.toString();
     }
 
-    private List<LegalEmbedding> retrieveContexts(String userQuestion) {
+    private List<AggregatedLawContext> retrieveContexts(String userQuestion) {
         double[] queryVector = generateEmbedding(userQuestion);
-        return vectorSearchService.searchTopK(queryVector, TOP_K);
+        List<LegalEmbedding> raw = vectorSearchService.searchTopK(queryVector, TOP_K);
+        return ChunkAggregator.aggregate(raw);
     }
 
     /**
