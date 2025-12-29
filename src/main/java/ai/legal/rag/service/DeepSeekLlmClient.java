@@ -1,14 +1,19 @@
 package ai.legal.rag.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Properties;
 
 /**
- * DeepSeek 大模型客户端实现。
+ * DeepSeek 大模型客户端：读取 application.properties 中的 deepseek.api.key，调用 Chat Completion。
  */
 public class DeepSeekLlmClient implements LlmClient {
 
@@ -16,135 +21,99 @@ public class DeepSeekLlmClient implements LlmClient {
     private static final String MODEL = "deepseek-chat";
     private static final double TEMPERATURE = 0.2;
     private static final int MAX_TOKENS = 1024;
-    private final HttpClient httpClient;
-    private final String apiKey;
 
-    public DeepSeekLlmClient(String apiKey) {
-        if (apiKey == null || apiKey.isEmpty()) {
-            throw new IllegalArgumentException("DeepSeek API Key 不能为空");
-        }
-        this.apiKey = apiKey;
-        this.httpClient = HttpClient.newHttpClient();
+    private final String apiKey;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    public DeepSeekLlmClient() {
+        this.apiKey = loadApiKey();
     }
 
-    /**
-     * 兼容现有接口：仅传单一 Prompt 时使用空的 systemPrompt。
-     */
     @Override
     public String chat(String prompt) {
         return generate("", prompt);
     }
 
     /**
-     * 调用 DeepSeek Chat Completions。
-     *
-     * @param systemPrompt 系统提示
-     * @param userPrompt   用户问题
-     * @return 模型回复文本
+     * 调用 DeepSeek Chat Completion，传入 system + user 两段 prompt，返回模型文本。
      */
     public String generate(String systemPrompt, String userPrompt) {
         try {
             String body = buildRequestBody(systemPrompt, userPrompt);
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(ENDPOINT))
-                    .header("Authorization", "Bearer " + apiKey)
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-                    .build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new RuntimeException("DeepSeek API 调用失败，HTTP " + response.statusCode() + ": " + response.body());
+            HttpURLConnection conn = (HttpURLConnection) new URL(ENDPOINT).openConnection();
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+            conn.setRequestProperty("Content-Type", "application/json");
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(body.getBytes(StandardCharsets.UTF_8));
             }
-            String content = parseContent(response.body());
-            if (content == null) {
-                throw new RuntimeException("DeepSeek API 响应缺少内容: " + response.body());
+            int code = conn.getResponseCode();
+            InputStream is = code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream();
+            String resp = readAll(is);
+            if (code < 200 || code >= 300) {
+                throw new RuntimeException("DeepSeek API 调用失败: HTTP " + code + " body=" + resp);
             }
-            return content;
-        } catch (IOException | InterruptedException e) {
-            Thread.currentThread().interrupt();
+            return parseContent(resp);
+        } catch (IOException e) {
             throw new RuntimeException("调用 DeepSeek API 异常: " + e.getMessage(), e);
         }
     }
 
-    private String buildRequestBody(String systemPrompt, String userPrompt) {
+    private String buildRequestBody(String systemPrompt, String userPrompt) throws IOException {
         String sys = systemPrompt == null ? "" : systemPrompt;
         String usr = userPrompt == null ? "" : userPrompt;
-        StringBuilder sb = new StringBuilder();
-        sb.append("{");
-        sb.append("\"model\":\"").append(MODEL).append("\",");
-        sb.append("\"temperature\":").append(TEMPERATURE).append(",");
-        sb.append("\"max_tokens\":").append(MAX_TOKENS).append(",");
-        sb.append("\"messages\":[");
-        sb.append("{\"role\":\"system\",\"content\":").append(toJsonString(sys)).append("},");
-        sb.append("{\"role\":\"user\",\"content\":").append(toJsonString(usr)).append("}");
-        sb.append("]");
-        sb.append("}");
-        return sb.toString();
+        JsonNode root = mapper.createObjectNode()
+                .put("model", MODEL)
+                .put("temperature", TEMPERATURE)
+                .put("max_tokens", MAX_TOKENS)
+                .set("messages", mapper.createArrayNode()
+                        .add(mapper.createObjectNode()
+                                .put("role", "system")
+                                .put("content", sys))
+                        .add(mapper.createObjectNode()
+                                .put("role", "user")
+                                .put("content", usr)));
+        return mapper.writeValueAsString(root);
     }
 
-    private String toJsonString(String text) {
-        String escaped = text.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "");
-        return "\"" + escaped + "\"";
+    private String parseContent(String resp) throws IOException {
+        JsonNode root = mapper.readTree(resp);
+        JsonNode content = root.path("choices").path(0).path("message").path("content");
+        if (content.isMissingNode() || content.isNull()) {
+            throw new RuntimeException("DeepSeek 响应缺少 content: " + resp);
+        }
+        return content.asText();
     }
 
-    /**
-     * 简单解析 choices[0].message.content。
-     */
-    private String parseContent(String responseBody) {
-        if (responseBody == null) {
-            return null;
+    private String readAll(InputStream is) throws IOException {
+        if (is == null) {
+            return "";
         }
-        int choicesIdx = responseBody.indexOf("\"choices\"");
-        if (choicesIdx < 0) {
-            return null;
-        }
-        int contentKey = responseBody.indexOf("\"content\"", choicesIdx);
-        if (contentKey < 0) {
-            return null;
-        }
-        int colon = responseBody.indexOf(':', contentKey);
-        if (colon < 0) {
-            return null;
-        }
-        int startQuote = responseBody.indexOf('"', colon + 1);
-        if (startQuote < 0) {
-            return null;
-        }
-        StringBuilder content = new StringBuilder();
-        boolean escape = false;
-        for (int i = startQuote + 1; i < responseBody.length(); i++) {
-            char c = responseBody.charAt(i);
-            if (escape) {
-                switch (c) {
-                    case '"':
-                        content.append('"');
-                        break;
-                    case '\\':
-                        content.append('\\');
-                        break;
-                    case 'n':
-                        content.append('\n');
-                        break;
-                    case 'r':
-                        break;
-                    case 't':
-                        content.append('\t');
-                        break;
-                    default:
-                        content.append(c);
-                }
-                escape = false;
-            } else if (c == '\\') {
-                escape = true;
-            } else if (c == '"') {
-                break;
-            } else {
-                content.append(c);
+        try (InputStream in = is; ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                bos.write(buf, 0, n);
             }
+            return bos.toString(StandardCharsets.UTF_8);
         }
-        return content.toString();
+    }
+
+    private String loadApiKey() {
+        try (InputStream in = getClass().getClassLoader().getResourceAsStream("application.properties")) {
+            if (in == null) {
+                throw new IllegalStateException("未找到 application.properties");
+            }
+            Properties p = new Properties();
+            p.load(in);
+            String key = p.getProperty("deepseek.api.key");
+            if (key == null || key.isEmpty()) {
+                throw new IllegalStateException("未配置 deepseek.api.key");
+            }
+            return key;
+        } catch (IOException e) {
+            throw new IllegalStateException("读取 application.properties 失败", e);
+        }
     }
 }
