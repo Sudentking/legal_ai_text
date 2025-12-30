@@ -10,6 +10,7 @@ import ai.legal.rag.intent.LegalIntentType;
 import ai.legal.rag.prompt.ClarificationPromptBuilder;
 import ai.legal.rag.service.FactSufficiencyEvaluator;
 import ai.legal.rag.service.LegalRagQaService;
+import ai.legal.rag.service.LlmClient;
 import ai.legal.rag.service.StructuredLawQueryService;
 import ai.legal.service.AgentTaskHistoryService;
 
@@ -24,6 +25,7 @@ public class LegalAgentService {
     private final LegalRagQaService ragQaService;
     private final StructuredLawQueryService structuredLawQueryService;
     private final FactSufficiencyEvaluator factSufficiencyEvaluator = new FactSufficiencyEvaluator();
+    private final LlmClient llmClient;
     private final AgentTaskHistoryDao historyDao = new AgentTaskHistoryDao();
     private final AgentTaskHistoryService historyService = new AgentTaskHistoryService(historyDao);
     private final QaLogDao qaLogDao = new QaLogDao();
@@ -35,10 +37,12 @@ public class LegalAgentService {
 
     public LegalAgentService(LegalIntentClassifier intentClassifier,
                              LegalRagQaService ragQaService,
-                             StructuredLawQueryService structuredLawQueryService) {
+                             StructuredLawQueryService structuredLawQueryService,
+                             LlmClient llmClient) {
         this.intentClassifier = intentClassifier;
         this.ragQaService = ragQaService;
         this.structuredLawQueryService = structuredLawQueryService;
+        this.llmClient = llmClient;
     }
 
     public String answer(String userQuestion) {
@@ -155,9 +159,10 @@ public class LegalAgentService {
                 String prompt = ClarificationPromptBuilder.build(question,
                         intentResult == null ? "需要补充关键事实" : intentResult.getReason(),
                         historyFacts);
+                String followUp = safeAskClarification(prompt, question);
                 historyDao.updateResult(historyId, "SUCCESS", null);
-                qaLogDao.updateResult(qaLogId, prompt, "SUCCESS", FsmAgentState.FACT_CHECK.name(), null);
-                return prompt;
+                qaLogDao.updateResult(qaLogId, followUp, "SUCCESS", FsmAgentState.FACT_CHECK.name(), null);
+                return followUp;
             }
 
             // 5) 进入 RAG + LLM 输出
@@ -198,5 +203,39 @@ public class LegalAgentService {
         }
         String normalized = userQuestion.replaceAll("\\s+", "");
         return normalized.contains("直接给结论") || normalized.contains("直接回答") || normalized.contains("不要追问") || normalized.contains("给出原文");
+    }
+
+    private String safeAskClarification(String prompt, String userQuestion) {
+        try {
+            String reply = llmClient.chat(prompt);
+            if (reply == null || reply.isBlank()) {
+                return fallbackClarificationQuestions(userQuestion);
+            }
+            String trimmed = reply.trim();
+            if (trimmed.startsWith("MOCK_LLM_REPLY:")) {
+                return fallbackClarificationQuestions(userQuestion);
+            }
+            // 防止模型直接回显系统提示词
+            if (trimmed.contains("系统角色：") || trimmed.contains("输出格式：")) {
+                return fallbackClarificationQuestions(userQuestion);
+            }
+            return trimmed;
+        } catch (Exception e) {
+            return fallbackClarificationQuestions(userQuestion);
+        }
+    }
+
+    private String fallbackClarificationQuestions(String userQuestion) {
+        String q = userQuestion == null ? "" : userQuestion.replaceAll("\\s+", "");
+        if (q.contains("未成年人") && (q.contains("合同") || q.contains("借款"))) {
+            return String.join("\n",
+                    "1. 未成年人具体年龄是多少周岁？",
+                    "2. 该借款/合同的金额是多少，款项实际是否已交付（转账/现金）？",
+                    "3. 该行为是否经过法定代理人同意或事后追认？有无证据（聊天记录/签字）？");
+        }
+        return String.join("\n",
+                "1. 请简要说明事情经过（谁与谁、何时、做了什么）。",
+                "2. 是否有关键证据（合同/借条/聊天记录/转账凭证）？分别有什么？",
+                "3. 你希望得到的具体目标是什么（确认权利义务/是否有效/如何维权）？");
     }
 }

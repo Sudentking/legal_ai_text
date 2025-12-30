@@ -27,7 +27,7 @@ public class LegalQaCli {
         VectorSearchService vectorSearchService = new VectorSearchService(new LegalEmbeddingDao());
         LegalRagQaService ragQaService = new LegalRagQaService(vectorSearchService, llmClient);
         StructuredLawQueryService structuredLawQueryService = new StructuredLawQueryService(new LawTextDao());
-        LegalAgentService agentService = new LegalAgentService(new LegalIntentClassifier(), ragQaService, structuredLawQueryService);
+        LegalAgentService agentService = new LegalAgentService(new LegalIntentClassifier(), ragQaService, structuredLawQueryService, llmClient);
 
         try (Scanner scanner = new Scanner(System.in)) {
             while (true) {
