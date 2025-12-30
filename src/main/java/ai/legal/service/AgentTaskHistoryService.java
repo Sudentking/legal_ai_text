@@ -27,15 +27,22 @@ public class AgentTaskHistoryService {
      * 判断最近是否有相同 query 的 RAG 失败记录。
      */
     public boolean recentRagFailedSameQuery(String sessionId, String userQuery) {
-        List<AgentTaskHistory> recent = dao.findRecentBySession(sessionId, 3);
+        return recentRagFailedSameQuery(dao.findRecentBySession(sessionId, 3), userQuery);
+    }
+
+    public boolean recentRagFailedSameQuery(List<AgentTaskHistory> recent, String userQuery) {
         if (recent == null || recent.isEmpty() || userQuery == null) {
             return false;
         }
         String q = userQuery.trim();
         for (AgentTaskHistory h : recent) {
             if (h.getUserQuery() != null && h.getUserQuery().trim().equalsIgnoreCase(q)) {
-                if ("fail".equalsIgnoreCase(h.getResultStatus())
-                        && "RAG".equalsIgnoreCase(h.getStrategyUsed())) {
+                boolean failed = "fail".equalsIgnoreCase(h.getResultStatus()) || "FAIL".equalsIgnoreCase(h.getResultStatus());
+                boolean rag = "rag".equalsIgnoreCase(h.getStrategyUsed())
+                        || "RAG".equalsIgnoreCase(h.getStrategyUsed())
+                        || "vector".equalsIgnoreCase(h.getStrategyUsed())
+                        || "VECTOR".equalsIgnoreCase(h.getStrategyUsed());
+                if (failed && rag) {
                     return true;
                 }
             }

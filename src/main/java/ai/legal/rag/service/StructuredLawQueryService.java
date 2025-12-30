@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
  */
 public class StructuredLawQueryService {
 
-    private static final Pattern LAW_NAME_PATTERN = Pattern.compile("([\\p{IsHan}A-Za-z0-9]{2,30}?(法典|法|条例|规定|办法|规章|解释))");
+    private static final Pattern LAW_NAME_PATTERN = Pattern.compile("([\\p{IsHan}A-Za-z0-9_·]{2,60}?(法典|法|条例|规定|办法|规章|解释))");
     private static final Pattern CHAPTER_PATTERN = Pattern.compile("第([一二三四五六七八九十百千0-9]+)章");
     private static final Pattern ARTICLE_PATTERN = Pattern.compile("第([一二三四五六七八九十百千0-9]+)条");
     private static final Pattern PART_PATTERN = Pattern.compile("第([一二三四五六七八九十百千0-9]+)(编|节)");
@@ -38,7 +38,7 @@ public class StructuredLawQueryService {
 
         // 优先条 → 章 → 全文
         if (query.article != null) {
-            List<LawText> byArticle = lawTextDao.findByLawNameAndArticle(query.lawName, query.article);
+            List<LawText> byArticle = lawTextDao.findByLawNameAndArticle(query.lawName, query.article, query.articleAlt);
             if (!byArticle.isEmpty()) {
                 return formatLawTexts(byArticle, "未在数据库找到对应条文");
             }
@@ -50,8 +50,10 @@ public class StructuredLawQueryService {
             }
             return "未在数据库找到包含关键词【" + query.keyword + "】的条文，请尝试调整关键词。";
         }
-        if (query.chapter != null) {
-            List<LawText> byChapter = lawTextDao.findByLawNameAndChapter(query.lawName, query.chapter);
+        if (query.chapter != null || query.partOrSection != null) {
+            String kw1 = query.chapter != null ? query.chapter : query.partOrSection;
+            String kw2 = query.chapter != null ? query.chapterAlt : query.partOrSectionAlt;
+            List<LawText> byChapter = lawTextDao.findByLawNameAndChapter(query.lawName, kw1, kw2);
             if (!byChapter.isEmpty()) {
                 return formatLawTexts(byChapter, "未在数据库找到对应章节");
             }
@@ -79,14 +81,14 @@ public class StructuredLawQueryService {
         String rawLawName = lawMatcher.group(0);
         String lawName = trimAfterLawSuffix(rawLawName);
 
-        String chapter = findFirstGroup(normalized, CHAPTER_PATTERN);
-        String partOrSection = findFirstGroup(normalized, PART_PATTERN);
-        String article = findFirstGroup(normalized, ARTICLE_PATTERN);
+        NumberToken chapterToken = normalizeNumberToken(findFirstGroup(normalized, CHAPTER_PATTERN));
+        NumberToken articleToken = normalizeNumberToken(findFirstGroup(normalized, ARTICLE_PATTERN));
+        PartToken partToken = findPartToken(normalized);
         boolean askFull = FULL_PATTERN.matcher(normalized).find();
         boolean general = GENERAL_PATTERN.matcher(normalized).find();
 
         // 若只有法律名称没有章/条/全文关键词，通常走全文查询；但若问题还带其他描述（如“关于人权”），则视为语义检索而非结构化
-        boolean hasStructureKeyword = chapter != null || article != null || partOrSection != null || askFull || general;
+        boolean hasStructureKeyword = chapterToken != null || articleToken != null || partToken != null || askFull || general;
         if (!hasStructureKeyword) {
             String remaining = normalized.replaceFirst(Pattern.quote(rawLawName), "");
             if (remaining == null || remaining.isEmpty()) {
@@ -102,10 +104,17 @@ public class StructuredLawQueryService {
 
         StructuredQuery query = new StructuredQuery();
         query.lawName = lawName;
-        query.chapter = chapter == null ? null : "第" + chapter + "章";
-        query.article = article == null ? null : "第" + article + "条";
-        if (partOrSection != null) {
-            query.chapter = "第" + partOrSection + (normalized.contains("节") ? "节" : "编");
+        if (chapterToken != null) {
+            query.chapter = "第" + chapterToken.chinese + "章";
+            query.chapterAlt = chapterToken.arabic == null ? null : ("第" + chapterToken.arabic + "章");
+        }
+        if (articleToken != null) {
+            query.article = "第" + articleToken.chinese + "条";
+            query.articleAlt = articleToken.arabic == null ? null : ("第" + articleToken.arabic + "条");
+        }
+        if (partToken != null) {
+            query.partOrSection = "第" + partToken.number.chinese + partToken.unit;
+            query.partOrSectionAlt = partToken.number.arabic == null ? null : ("第" + partToken.number.arabic + partToken.unit);
         }
         if (general && query.chapter == null) {
             query.chapter = "总则";
@@ -155,6 +164,129 @@ public class StructuredLawQueryService {
         return null;
     }
 
+    private PartToken findPartToken(String text) {
+        Matcher m = PART_PATTERN.matcher(text);
+        if (!m.find()) {
+            return null;
+        }
+        String num = m.group(1);
+        String unit = m.group(2);
+        NumberToken token = normalizeNumberToken(num);
+        if (token == null) {
+            return null;
+        }
+        PartToken pt = new PartToken();
+        pt.number = token;
+        pt.unit = unit;
+        return pt;
+    }
+
+    private NumberToken normalizeNumberToken(String token) {
+        if (token == null || token.isBlank()) {
+            return null;
+        }
+        String t = token.trim();
+        NumberToken nt = new NumberToken();
+        if (t.matches("\\d+")) {
+            nt.arabic = t;
+            nt.chinese = toChineseNumber(parseSafeInt(t));
+            return nt;
+        }
+        nt.chinese = t;
+        Integer arabic = toArabicNumber(t);
+        nt.arabic = arabic == null ? null : String.valueOf(arabic);
+        return nt;
+    }
+
+    private int parseSafeInt(String digits) {
+        try {
+            return Integer.parseInt(digits);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    private String toChineseNumber(int n) {
+        if (n <= 0) {
+            return String.valueOf(n);
+        }
+        String[] digits = {"零", "一", "二", "三", "四", "五", "六", "七", "八", "九"};
+        String[] units = {"", "十", "百", "千"};
+        int[] parts = {n / 1000, (n % 1000) / 100, (n % 100) / 10, n % 10};
+        StringBuilder sb = new StringBuilder();
+        boolean zeroPending = false;
+        for (int i = 0; i < parts.length; i++) {
+            int val = parts[i];
+            int unitIdx = parts.length - 1 - i;
+            if (val == 0) {
+                zeroPending = sb.length() > 0;
+                continue;
+            }
+            if (zeroPending) {
+                sb.append(digits[0]);
+                zeroPending = false;
+            }
+            // 10~19: “十X” 而不是 “一十X”
+            if (unitIdx == 1 && val == 1 && sb.length() == 0) {
+                sb.append(units[unitIdx]);
+            } else {
+                sb.append(digits[val]).append(units[unitIdx]);
+            }
+        }
+        return sb.length() == 0 ? digits[0] : sb.toString();
+    }
+
+    private Integer toArabicNumber(String chinese) {
+        if (chinese == null || chinese.isBlank()) {
+            return null;
+        }
+        int result = 0;
+        int section = 0;
+        int number = 0;
+        for (int i = 0; i < chinese.length(); i++) {
+            int val = chineseDigitValue(chinese.charAt(i));
+            if (val >= 0) {
+                number = val;
+                continue;
+            }
+            int unit = chineseUnitValue(chinese.charAt(i));
+            if (unit == 0) {
+                return null;
+            }
+            if (unit == 10 && number == 0) {
+                number = 1; // “十” = 10，“十二” = 12
+            }
+            section += number * unit;
+            number = 0;
+        }
+        return result + section + number;
+    }
+
+    private int chineseDigitValue(char c) {
+        return switch (c) {
+            case '零', '〇' -> 0;
+            case '一' -> 1;
+            case '二', '两' -> 2;
+            case '三' -> 3;
+            case '四' -> 4;
+            case '五' -> 5;
+            case '六' -> 6;
+            case '七' -> 7;
+            case '八' -> 8;
+            case '九' -> 9;
+            default -> -1;
+        };
+    }
+
+    private int chineseUnitValue(char c) {
+        return switch (c) {
+            case '十' -> 10;
+            case '百' -> 100;
+            case '千' -> 1000;
+            default -> 0;
+        };
+    }
+
     private String formatLawTexts(List<LawText> lawTexts, String emptyMessage) {
         if (lawTexts == null || lawTexts.isEmpty()) {
             return emptyMessage;
@@ -177,8 +309,22 @@ public class StructuredLawQueryService {
     private static class StructuredQuery {
         String lawName;
         String chapter;
+        String chapterAlt;
         String article;
+        String articleAlt;
+        String partOrSection;
+        String partOrSectionAlt;
         String keyword;
         boolean askFullLaw;
+    }
+
+    private static class NumberToken {
+        String chinese;
+        String arabic;
+    }
+
+    private static class PartToken {
+        NumberToken number;
+        String unit;
     }
 }

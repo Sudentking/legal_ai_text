@@ -17,13 +17,19 @@ public class AgentTaskHistoryDao {
 
     private static final String INSERT_SQL = "INSERT INTO agent_task_history " +
             "(session_id, user_query, intent_type, strategy_used, result_status, fail_reason) VALUES (?, ?, ?, ?, ?, ?)";
+    private static final String UPDATE_SQL = "UPDATE agent_task_history SET result_status = ?, fail_reason = ? WHERE id = ?";
 
-    public void insertHistory(AgentTaskHistory history) {
+    /**
+     * 两阶段日志：先写入 PENDING，后续根据执行结果更新 SUCCESS/FAIL。
+     *
+     * @return 自增主键，失败返回 -1
+     */
+    public long insertHistory(AgentTaskHistory history) {
         if (history == null) {
-            return;
+            return -1L;
         }
         try (Connection connection = MySqlConfig.getConnection();
-             PreparedStatement ps = connection.prepareStatement(INSERT_SQL)) {
+             PreparedStatement ps = connection.prepareStatement(INSERT_SQL, PreparedStatement.RETURN_GENERATED_KEYS)) {
             ps.setString(1, history.getSessionId());
             ps.setString(2, history.getUserQuery());
             ps.setString(3, history.getIntentType());
@@ -31,8 +37,32 @@ public class AgentTaskHistoryDao {
             ps.setString(5, history.getResultStatus());
             ps.setString(6, history.getFailReason());
             ps.executeUpdate();
+            try (ResultSet rs = ps.getGeneratedKeys()) {
+                if (rs.next()) {
+                    long id = rs.getLong(1);
+                    history.setId(id);
+                    return id;
+                }
+            }
         } catch (SQLException e) {
             System.err.println("插入 agent_task_history 失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return -1L;
+    }
+
+    public void updateResult(long id, String resultStatus, String failReason) {
+        if (id <= 0) {
+            return;
+        }
+        try (Connection connection = MySqlConfig.getConnection();
+             PreparedStatement ps = connection.prepareStatement(UPDATE_SQL)) {
+            ps.setString(1, resultStatus);
+            ps.setString(2, failReason);
+            ps.setLong(3, id);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("更新 agent_task_history 失败: " + e.getMessage());
             e.printStackTrace();
         }
     }

@@ -12,7 +12,7 @@ public class QaLog {
     private String question;
     private String answer;
     private String agentState;
-    private String status; // INIT / SUCCESS / FAIL
+    private String status; // PENDING / SUCCESS / FAIL
     private String errorMessage;
     private Timestamp createdAt;
 

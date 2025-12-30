@@ -44,17 +44,24 @@ public class LawTextDao {
     /**
      * 根据法律名称与条号查询条文（用于结构化法条查询）。
      */
-    public List<LawText> findByLawNameAndArticle(String lawName, String articleKeyword) {
+    public List<LawText> findByLawNameAndArticle(String lawName, String articleKeyword, String articleKeywordAlt) {
         List<LawText> list = new ArrayList<>();
+        boolean hasAlt = articleKeywordAlt != null && !articleKeywordAlt.isBlank() && !articleKeywordAlt.equals(articleKeyword);
         String sql = "SELECT id, law_code, law_title, article_number, full_text, effective_date, created_at, updated_at " +
-                "FROM law_text WHERE (law_code LIKE ? OR law_title LIKE ?) AND article_number LIKE ? ORDER BY id ASC";
+                "FROM law_text WHERE (law_code LIKE ? OR law_title LIKE ?) AND " +
+                (hasAlt ? "(article_number LIKE ? OR article_number LIKE ?)" : "article_number LIKE ?") +
+                " ORDER BY id ASC";
         String likeName = "%" + lawName + "%";
         String likeArticle = "%" + articleKeyword + "%";
+        String likeArticleAlt = hasAlt ? "%" + articleKeywordAlt + "%" : null;
         try (Connection connection = getConnection();
              PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, likeName);
             statement.setString(2, likeName);
             statement.setString(3, likeArticle);
+            if (hasAlt) {
+                statement.setString(4, likeArticleAlt);
+            }
             try (ResultSet rs = statement.executeQuery()) {
                 while (rs.next()) {
                     list.add(mapRow(rs));
@@ -70,17 +77,24 @@ public class LawTextDao {
     /**
      * 根据法律名称与章节查询条文（用于结构化法条查询）。
      */
-    public List<LawText> findByLawNameAndChapter(String lawName, String chapterKeyword) {
+    public List<LawText> findByLawNameAndChapter(String lawName, String chapterKeyword, String chapterKeywordAlt) {
         List<LawText> list = new ArrayList<>();
+        boolean hasAlt = chapterKeywordAlt != null && !chapterKeywordAlt.isBlank() && !chapterKeywordAlt.equals(chapterKeyword);
         String sql = "SELECT id, law_code, law_title, article_number, full_text, effective_date, created_at, updated_at " +
-                "FROM law_text WHERE (law_code LIKE ? OR law_title LIKE ?) AND law_title LIKE ? ORDER BY id ASC";
+                "FROM law_text WHERE (law_code LIKE ? OR law_title LIKE ?) AND " +
+                (hasAlt ? "(law_title LIKE ? OR law_title LIKE ?)" : "law_title LIKE ?") +
+                " ORDER BY id ASC";
         String likeName = "%" + lawName + "%";
         String likeChapter = "%" + chapterKeyword + "%";
+        String likeChapterAlt = hasAlt ? "%" + chapterKeywordAlt + "%" : null;
         try (Connection connection = getConnection();
              PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, likeName);
             statement.setString(2, likeName);
             statement.setString(3, likeChapter);
+            if (hasAlt) {
+                statement.setString(4, likeChapterAlt);
+            }
             try (ResultSet rs = statement.executeQuery()) {
                 while (rs.next()) {
                     list.add(mapRow(rs));
