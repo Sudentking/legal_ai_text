@@ -16,7 +16,7 @@ import java.util.UUID;
 public class LegalRagQaService {
 
     private static final int VECTOR_DIMENSION = 1536;
-    private static final int TOP_K = 5;
+    private static final int TOP_K = 10;
 
     private final VectorSearchService vectorSearchService;
     private final LlmClient llmClient;
@@ -57,6 +57,14 @@ public class LegalRagQaService {
      */
     public String answerWithReasoning(String userQuestion, boolean factsSufficient, String historyFacts) {
         List<AggregatedLawContext> contexts = retrieveContexts(userQuestion);
+        // 检索失败兜底：向量命中与用户请求的法名/条号不一致
+        if (contexts.isEmpty() || isInconsistent(userQuestion, contexts)) {
+            List<AggregatedLawContext> fallback = retryWithSemanticLocator(userQuestion);
+            if (fallback.isEmpty()) {
+                return "未找到条文";
+            }
+            contexts = fallback;
+        }
         // 第一阶段：法律依据
         String basisPrompt = LegalBasisPromptBuilder.buildPrompt(userQuestion, contexts);
         String legalBasis = llmClient.chat(basisPrompt);
@@ -74,6 +82,58 @@ public class LegalRagQaService {
         double[] queryVector = generateEmbedding(userQuestion);
         List<LegalEmbedding> raw = vectorSearchService.searchTopK(queryVector, TOP_K);
         return ChunkAggregator.aggregate(raw);
+    }
+
+    /**
+     * 检查检索结果与用户问题中的法名/条号是否一致。
+     */
+    private boolean isInconsistent(String userQuestion, List<AggregatedLawContext> contexts) {
+        if (userQuestion == null || contexts == null || contexts.isEmpty()) {
+            return false;
+        }
+        String normalized = userQuestion.replaceAll("\\s+", "");
+        boolean asksArticle = normalized.matches(".*第[一二三四五六七八九十百0-9]+条.*");
+        boolean asksLawName = normalized.contains("法典") || normalized.contains("法") || normalized.contains("条例");
+        if (!asksArticle && !asksLawName) {
+            return false;
+        }
+        // 若用户提到条号，要求返回的条文范围包含该条，否则视为不一致
+        if (asksArticle) {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("第([一二三四五六七八九十百0-9]+)条").matcher(normalized);
+            String target = null;
+            if (m.find()) {
+                target = m.group(1);
+            }
+            if (target != null) {
+                for (AggregatedLawContext ctx : contexts) {
+                    if (ctx.getArticleRange() != null && ctx.getArticleRange().contains(target)) {
+                        return false; // 找到匹配
+                    }
+                }
+                return true; // 未匹配到用户请求条号
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 使用 LLM 进行语义定位条号，再尝试结构化查询。
+     */
+    private List<AggregatedLawContext> retryWithSemanticLocator(String userQuestion) {
+        try {
+            // 简单提示让 LLM 猜测可能的编/章/条
+            String locatorPrompt = "根据用户问题，推测可能的法律编/章/条号，只输出类似“第一编 第一章 第一条”或“第九条”的简短结果：\n" + userQuestion;
+            String locator = llmClient.chat(locatorPrompt);
+            if (locator == null || locator.isBlank()) {
+                return List.of();
+            }
+            // 将定位结果拼回去做结构化检索
+            String combined = userQuestion + " " + locator.trim();
+            List<LegalEmbedding> raw = vectorSearchService.searchTopK(generateEmbedding(combined), TOP_K);
+            return ChunkAggregator.aggregate(raw);
+        } catch (Exception e) {
+            return List.of();
+        }
     }
 
     /**
