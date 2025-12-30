@@ -37,6 +37,13 @@ public class LegalAgentService {
      * @return 模型回答或澄清问题
      */
     public String answer(String userQuestion) {
+        return answer(userQuestion, "");
+    }
+
+    /**
+     * 支持传入对话历史中已确认的事实摘要，避免重复追问。
+     */
+    public String answer(String userQuestion, String historyFacts) {
         // 0) 优先：命中“法律名称 + 章/条/全文”结构化查询，直接返回数据库原文
         String structured = structuredLawQueryService.answerIfStructured(userQuestion);
         if (structured != null) {
@@ -47,27 +54,27 @@ public class LegalAgentService {
         // 1) 法条原文查询：视为信息充分，直接进入 RAG
         if (intentResult.getType() == LegalIntentType.LAW_TEXT_QUERY) {
             // 设计说明：用户明确指定法律名称/章节/条款，属于可直接回答型查询，不应阻断。直接做两阶段法律推理。
-            return ragQaService.answerWithReasoning(userQuestion, true, "");
+            return ragQaService.answerWithReasoning(userQuestion, true, historyFacts);
         }
         // 2) 责任/条件判断：需要事实支撑，优先触发追问
         if (intentResult.getType() == LegalIntentType.LEGAL_LIABILITY
                 || intentResult.getType() == LegalIntentType.LEGAL_CONDITION_CHECK) {
             if (factsSufficient) {
                 // 事实已满足最低标准，直接输出初步结论+方案+依据
-                return ragQaService.answerWithReasoning(userQuestion, true, "");
+                return ragQaService.answerWithReasoning(userQuestion, true, historyFacts);
             }
-            String prompt = ClarificationPromptBuilder.build(userQuestion, "责任或条件判断需要明确主体、行为、时间、后果等事实");
+            String prompt = ClarificationPromptBuilder.build(userQuestion, "责任或条件判断需要明确主体、行为、时间、后果等事实", historyFacts);
             return llmClient.chat(prompt);
         }
         // 3) 置信度不足或显式不足：兜底追问
         if (intentResult.getType() == LegalIntentType.NEEDS_FACTS || intentResult.getConfidence() < 0.6) {
             if (factsSufficient) {
-                return ragQaService.answerWithReasoning(userQuestion, true, "");
+                return ragQaService.answerWithReasoning(userQuestion, true, historyFacts);
             }
-            String prompt = ClarificationPromptBuilder.build(userQuestion, intentResult.getReason());
+            String prompt = ClarificationPromptBuilder.build(userQuestion, intentResult.getReason(), historyFacts);
             return llmClient.chat(prompt);
         }
         // 4) 解释/适用范围/流程等：默认认为信息足够，可直接进入 RAG
-        return ragQaService.answerWithReasoning(userQuestion, factsSufficient, "");
+        return ragQaService.answerWithReasoning(userQuestion, factsSufficient, historyFacts);
     }
 }
