@@ -9,20 +9,22 @@ public class AgentTaskHistory {
     private Long id;
     private String sessionId;
     private String userQuery;
-    private String agentState;
     private String intentType;
-    private String decisionReason;
+    private String strategyUsed;
+    private String resultStatus;
+    private String failReason;
     private Timestamp createdAt;
 
     public AgentTaskHistory() {
     }
 
-    public AgentTaskHistory(String sessionId, String userQuery, String agentState, String intentType, String decisionReason) {
+    public AgentTaskHistory(String sessionId, String userQuery, String intentType, String strategyUsed, String resultStatus, String failReason) {
         this.sessionId = sessionId;
         this.userQuery = userQuery;
-        this.agentState = agentState;
         this.intentType = intentType;
-        this.decisionReason = decisionReason;
+        this.strategyUsed = strategyUsed;
+        this.resultStatus = resultStatus;
+        this.failReason = failReason;
     }
 
     public Long getId() {
@@ -49,14 +51,6 @@ public class AgentTaskHistory {
         this.userQuery = userQuery;
     }
 
-    public String getAgentState() {
-        return agentState;
-    }
-
-    public void setAgentState(String agentState) {
-        this.agentState = agentState;
-    }
-
     public String getIntentType() {
         return intentType;
     }
@@ -65,12 +59,28 @@ public class AgentTaskHistory {
         this.intentType = intentType;
     }
 
-    public String getDecisionReason() {
-        return decisionReason;
+    public String getStrategyUsed() {
+        return strategyUsed;
     }
 
-    public void setDecisionReason(String decisionReason) {
-        this.decisionReason = decisionReason;
+    public void setStrategyUsed(String strategyUsed) {
+        this.strategyUsed = strategyUsed;
+    }
+
+    public String getResultStatus() {
+        return resultStatus;
+    }
+
+    public void setResultStatus(String resultStatus) {
+        this.resultStatus = resultStatus;
+    }
+
+    public String getFailReason() {
+        return failReason;
+    }
+
+    public void setFailReason(String failReason) {
+        this.failReason = failReason;
     }
 
     public Timestamp getCreatedAt() {

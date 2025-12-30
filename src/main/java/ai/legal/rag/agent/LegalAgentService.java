@@ -12,9 +12,13 @@ import ai.legal.rag.service.FactSufficiencyEvaluator;
 import ai.legal.rag.service.LegalRagQaService;
 import ai.legal.rag.service.LlmClient;
 import ai.legal.rag.service.StructuredLawQueryService;
+import ai.legal.service.AgentTaskHistoryService;
+
+import java.util.List;
 
 /**
  * 法律智能 Agent：意图识别 → 决策 → RAG → LLM。
+ * 集成 FSM 与两阶段日志（PENDING → SUCCESS/FAIL）。
  */
 public class LegalAgentService {
 
@@ -24,10 +28,12 @@ public class LegalAgentService {
     private final FactSufficiencyEvaluator factSufficiencyEvaluator = new FactSufficiencyEvaluator();
     private final LlmClient llmClient;
     private final AgentTaskHistoryDao historyDao = new AgentTaskHistoryDao();
+    private final AgentTaskHistoryService historyService = new AgentTaskHistoryService(historyDao);
     private final QaLogDao qaLogDao = new QaLogDao();
+    private final AgentStateMachine fsm = new AgentStateMachine();
+
     private String sessionId = "default-session";
     private Long currentUserId = 1L;
-    // 简单的有状态控制，防止无限追问
     private AgentState state = AgentState.INIT;
     private String lastSolutionSummary = "";
 
@@ -41,33 +47,21 @@ public class LegalAgentService {
         this.llmClient = llmClient;
     }
 
-    /**
-     * 完整问答闭环。
-     *
-     * @param userQuestion 用户问题
-     * @return 模型回答或澄清问题
-     */
     public String answer(String userQuestion) {
         return answer(userQuestion, "");
     }
 
-    /**
-     * 支持传入对话历史中已确认的事实摘要，避免重复追问。
-     */
     public String answer(String userQuestion, String historyFacts) {
-        return answer(sessionId, userQuestion, historyFacts);
+        return answer(this.currentUserId, this.sessionId, userQuestion, historyFacts);
     }
 
-    /**
-     * 支持传入 sessionId，用于读取历史与写入历史。
-     */
     public String answer(String sessionId, String userQuestion, String historyFacts) {
         return answer(this.currentUserId, sessionId, userQuestion, historyFacts);
     }
 
     /**
-        * 完整入口：带 userId + sessionId + 已确认事实。
-        */
+     * 带 userId + sessionId 的主入口。
+     */
     public String answer(Long userId, String sessionId, String userQuestion, String historyFacts) {
         if (sessionId != null && !sessionId.isBlank()) {
             this.sessionId = sessionId;
@@ -75,93 +69,90 @@ public class LegalAgentService {
         if (userId != null) {
             this.currentUserId = userId;
         }
-        // 1) 先记录 INIT 日志，防止异常时无记录
-        QaLog qaLog = new QaLog(this.currentUserId, this.sessionId, userQuestion, "INIT", state.name());
-        long logId = qaLogDao.insertInit(qaLog);
+
+        long logId = qaLogDao.insertInit(new QaLog(this.currentUserId, this.sessionId, userQuestion, "PENDING", state.name()));
         try {
-            // 读取最近历史，用于决策
-            var recent = historyDao.findRecentBySession(this.sessionId, 5);
+            List<AgentTaskHistory> recent = historyService.findRecent(this.sessionId, 5);
+
+            // 历史决策：避免重复追问/重复失败
+            if (historyService.recentRagFailedSameQuery(this.sessionId, userQuestion)) {
+                state = AgentState.FINISHED;
+                logTaskHistory(userQuestion, "UNKNOWN", "STRUCTURED_SQL", "fail", "上次相同问题 RAG 失败，跳过 RAG");
+                String msg = "上次相同问题向量检索失败，本次未重复检索，请尝试明确条号或更换问法。";
+                qaLogDao.updateResult(logId, msg, "FAIL", state.name(), "重复失败的向量检索已跳过");
+                return msg;
+            }
             if (isRepeatedQuery(userQuestion, recent)) {
                 state = AgentState.SOLUTION_GENERATED;
-                logState(userQuestion, null, "重复问题，直接输出方案");
+                logTaskHistory(userQuestion, "REPEAT", "RAG", "success", null);
                 String result = ragQaService.answerWithReasoning(userQuestion, true, historyFacts);
                 qaLogDao.updateResult(logId, result, "SUCCESS", state.name(), null);
                 return result;
             }
-            if (lastTwoAreFollowUp(recent)) {
-                state = AgentState.FINISHED;
-                logState(userQuestion, null, "连续追问已达上限，输出总结");
-                String result = lastSolutionSummary.isEmpty() ? "已进入补充信息阶段，建议结合已确认事实输出总结。" : lastSolutionSummary;
+            if (state == AgentState.NEED_FOLLOW_UP) {
+                String result = buildFollowUpReminder();
+                logTaskHistory(userQuestion, null, "FOLLOW_UP", "success", null);
                 qaLogDao.updateResult(logId, result, "SUCCESS", state.name(), null);
                 return result;
             }
 
-            // 若上一轮已经在补充信息阶段，则本轮不再重复进入事实核查，直接提醒用户补充。
-            if (state == AgentState.NEED_FOLLOW_UP) {
-                String result = buildFollowUpReminder();
-                qaLogDao.updateResult(logId, result, "SUCCESS", state.name(), null);
-                return result;
-            }
-            // 每轮开始重置为 INIT，再按规则迁移，确保一次输入只触发明确的迁移链路。
+            // 状态机重置
             state = AgentState.INIT;
+            fsm.reset();
             logState(userQuestion, null, "初始化");
-            // 0) 优先：命中“法律名称 + 章/条/全文”结构化查询，直接返回数据库原文
+
+            // 结构化命中直接返回
             String structured = structuredLawQueryService.answerIfStructured(userQuestion);
             if (structured != null) {
                 state = AgentState.FINISHED;
-                logState(userQuestion, null, "结构化命中，直接返回");
+                fsm.next(null, true, true);
+                logTaskHistory(userQuestion, "LAW_TEXT_QUERY", "STRUCTURED_SQL", "success", null);
                 qaLogDao.updateResult(logId, structured, "SUCCESS", state.name(), null);
                 return structured;
             }
+
             LegalIntentResult intentResult = intentClassifier.classify(userQuestion);
             state = AgentState.INTENT_RECOGNIZED;
             logState(userQuestion, intentResult, "意图识别");
             boolean factsSufficient = factSufficiencyEvaluator.isLoanFactsSufficient(userQuestion);
-            // 1) 法条原文查询：视为信息充分，直接进入 RAG
-            if (intentResult.getType() == LegalIntentType.LAW_TEXT_QUERY) {
-                state = AgentState.FINISHED;
-                logState(userQuestion, intentResult, "法条原文直接回答");
-                String result = ragQaService.answerWithReasoning(userQuestion, true, historyFacts);
-                qaLogDao.updateResult(logId, result, "SUCCESS", state.name(), null);
-                return result;
-            }
-            // 2) 责任/条件判断：需要事实支撑，优先触发追问
-            if (intentResult.getType() == LegalIntentType.LEGAL_LIABILITY
-                    || intentResult.getType() == LegalIntentType.LEGAL_CONDITION_CHECK) {
-                if (factsSufficient) {
+            boolean hasLawLocator = intentResult.getType() == LegalIntentType.LAW_TEXT_QUERY;
+            FsmAgentState next = fsm.next(intentResult.getType(), hasLawLocator, factsSufficient);
+
+            switch (next) {
+                case DIRECT_LAW_QUERY -> {
                     state = AgentState.FINISHED;
-                    logState(userQuestion, intentResult, "事实充分，直接输出");
-                    String result = ragQaService.answerWithReasoning(userQuestion, true, historyFacts);
+                    String msg = "未在数据库找到对应条文";
+                    logTaskHistory(userQuestion, intentResult.getType().name(), "STRUCTURED_SQL", "fail", msg);
+                    qaLogDao.updateResult(logId, msg, "SUCCESS", state.name(), null);
+                    return msg;
+                }
+                case FACT_CHECK -> {
+                    logTaskHistory(userQuestion, intentResult.getType().name(), "RAG", "success", null);
+                    return generateSolutionThenFollowUp(userQuestion, intentResult.getReason(), historyFacts, logId);
+                }
+                case RAG_RETRIEVAL, LLM_ANSWER, FINISHED -> {
+                    state = AgentState.FINISHED;
+                    logTaskHistory(userQuestion, intentResult.getType().name(), "RAG", "success", null);
+                    String result = ragQaService.answerWithReasoning(userQuestion, factsSufficient, historyFacts);
                     qaLogDao.updateResult(logId, result, "SUCCESS", state.name(), null);
                     return result;
                 }
-                return generateSolutionThenFollowUp(userQuestion, intentResult.getReason(), historyFacts, logId);
-            }
-            // 3) 置信度不足或显式不足：兜底追问
-            if (intentResult.getType() == LegalIntentType.NEEDS_FACTS || intentResult.getConfidence() < 0.6) {
-                if (factsSufficient) {
+                default -> {
                     state = AgentState.FINISHED;
-                    logState(userQuestion, intentResult, "事实充分，直接输出");
-                    String result = ragQaService.answerWithReasoning(userQuestion, true, historyFacts);
+                    logTaskHistory(userQuestion, intentResult.getType().name(), "RAG", "success", null);
+                    String result = ragQaService.answerWithReasoning(userQuestion, factsSufficient, historyFacts);
                     qaLogDao.updateResult(logId, result, "SUCCESS", state.name(), null);
                     return result;
                 }
-                return generateSolutionThenFollowUp(userQuestion, intentResult.getReason(), historyFacts, logId);
             }
-            // 4) 解释/适用范围/流程等：默认认为信息足够，可直接进入 RAG
-            state = AgentState.FINISHED;
-            logState(userQuestion, intentResult, "解释/适用/流程，直接输出");
-            String result = ragQaService.answerWithReasoning(userQuestion, factsSufficient, historyFacts);
-            qaLogDao.updateResult(logId, result, "SUCCESS", state.name(), null);
-            return result;
         } catch (Exception e) {
             qaLogDao.updateResult(logId, null, "FAIL", state.name(), e.getMessage());
+            logTaskHistory(userQuestion, null, "UNKNOWN", "fail", e.getMessage());
             throw e;
         }
     }
 
     private String generateSolutionThenFollowUp(String userQuestion, String reason, String historyFacts, long logId) {
-        // 先给出初步方案摘要，再进入 NEED_FOLLOW_UP，避免无限追问
         try {
             state = AgentState.FACT_CHECK;
             logState(userQuestion, null, "事实不足，生成方案摘要后追问");
@@ -176,6 +167,7 @@ public class LegalAgentService {
             return result;
         } catch (Exception e) {
             qaLogDao.updateResult(logId, null, "FAIL", state.name(), e.getMessage());
+            logTaskHistory(userQuestion, null, "RAG", "fail", e.getMessage());
             throw e;
         }
     }
@@ -187,21 +179,24 @@ public class LegalAgentService {
     }
 
     private void logState(String userQuestion, LegalIntentResult intentResult, String reason) {
-        AgentTaskHistory h = new AgentTaskHistory(this.sessionId, userQuestion, state.name(),
+        AgentTaskHistory h = new AgentTaskHistory(this.sessionId, userQuestion,
                 intentResult == null ? null : intentResult.getType().name(),
-                reason);
+                null, null, reason);
         historyDao.insertHistory(h);
     }
 
-    private boolean lastTwoAreFollowUp(java.util.List<AgentTaskHistory> recent) {
-        if (recent == null || recent.size() < 2) {
-            return false;
-        }
-        return "NEED_FOLLOW_UP".equals(recent.get(0).getAgentState())
-                && "NEED_FOLLOW_UP".equals(recent.get(1).getAgentState());
+    private void logTaskHistory(String userQuery, String intent, String strategy, String resultStatus, String failReason) {
+        AgentTaskHistory h = new AgentTaskHistory();
+        h.setSessionId(this.sessionId);
+        h.setUserQuery(userQuery);
+        h.setIntentType(intent);
+        h.setStrategyUsed(strategy);
+        h.setResultStatus(resultStatus);
+        h.setFailReason(failReason);
+        historyDao.insertHistory(h);
     }
 
-    private boolean isRepeatedQuery(String userQuestion, java.util.List<AgentTaskHistory> recent) {
+    private boolean isRepeatedQuery(String userQuestion, List<AgentTaskHistory> recent) {
         if (userQuestion == null || recent == null || recent.isEmpty()) {
             return false;
         }
