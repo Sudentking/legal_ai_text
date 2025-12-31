@@ -1,30 +1,31 @@
 # legal-ai-system
 
-纯 Java + JDBC 的法律条文向量化与检索示例，使用 MySQL 作为业务库、PostgreSQL（pgvector）作为向量库。当前实现了条文切片、向量生成（占位算法）、向量入库及增量导入管道。
+纯 Java + JDBC 的法律智能问答系统雏形，使用：
+- MySQL：业务库（法律条文 + 用户/权限 + 日志）
+- PostgreSQL + pgvector：向量库（RAG 检索）
 
-## 目录结构
-- `src/main/resources/application.properties`：PostgreSQL 与 MySQL 连接配置。
-- `ai/legal/config/DatabaseConfig.java`：PostgreSQL 连接。
-- `ai/legal/config/MySqlConfig.java`：MySQL 连接。
-- `ai/legal/model/*`：数据模型（LawText、LawTextChunk、LegalEmbedding）。
-- `ai/legal/dao/mysql/LawTextDao.java`：读取 `law_text`、写入 `law_text_chunk`。
-- `ai/legal/dao/LegalEmbeddingDao.java`：向 PostgreSQL `legal_embedding` 插入与查询。
-- `ai/legal/util/TextSplitter.java`：300–500 字分片，按段落聚合后切分。
-- `ai/legal/service/VectorSearchService.java`：封装向量插入/查询。
-- `ai/legal/service/importer/*`：增量导入管道（策略、结果统计、分片服务、入口）。
-- `ai/legal/App.java`：示例插入与 Top-K 查询。
-- `ai/legal/rag/prompt/LegalRagPromptBuilder.java`：RAG 场景 Prompt 拼装。
-- `ai/legal/rag/prompt/ClarificationPromptBuilder.java`：不足以作答时的补充事实提问 Prompt。
-- `ai/legal/rag/service/LegalRagQaService.java`：RAG 问答闭环（向量检索 + Prompt + LLM 调用）。
-- `ai/legal/rag/service/LlmClient.java`：LLM 客户端接口，占位便于接入厂商 SDK。
-- `ai/legal/rag/intent/*`：意图识别（关键词规则）。
-- `ai/legal/rag/agent/LegalAgentService.java`：Agent 主流程（意图识别 → 决策 → RAG → LLM）。
+当前包含：
+- 法律条文结构化存储：`law_text` / `law_text_chunk`
+- RAG：向量检索 + 条文重组 + 两阶段输出（法律依据 → 法律分析与建议）
+- 法条原文/章节/全文结构化直通：命中后不走向量检索
+- 用户注册/登录/会话/权限（`USER` / `SUPER_ADMIN`）
+- Web 雏形（纯 JDK `HttpServer`）：登录/注册/提问页/后台
 
-## 依赖与环境
+## 目录结构（关键入口）
+- 配置：`src/main/resources/application.properties`
+- 结构化法条查询：`src/main/java/ai/legal/rag/service/StructuredLawQueryService.java`
+- RAG 问答服务：`src/main/java/ai/legal/rag/service/LegalRagQaService.java`
+- Agent 主流程：`src/main/java/ai/legal/rag/agent/LegalAgentService.java`
+- 认证与权限：`src/main/java/ai/legal/service/auth/AuthService.java`、`src/main/java/ai/legal/service/auth/AdminService.java`
+- Web Server：`src/main/java/ai/legal/web/LegalWebServerApp.java`
+- SQL 脚本：`sql/mysql_user_auth_schema.sql`、`sql/mysql_agent_log_schema.sql`
+- 提示词使用：`PROMPT_ENGINEER.md`
+
+## 环境依赖
 - JDK 17
 - Maven
-- MySQL（库 `legal_dev`，表 `law_text`、`law_text_chunk` 已存在）
-- PostgreSQL 16 + pgvector（库 `legal_vector`，表 `legal_embedding` 已存在，向量维度 1536）
+- MySQL（默认库：`legal_dev`）
+- PostgreSQL 16 + pgvector（默认库：`legal_vector`）
 
 ## 配置
 编辑 `src/main/resources/application.properties`：
@@ -33,101 +34,86 @@
 db.url=jdbc:postgresql://localhost:5432/legal_vector
 db.user=postgres
 db.password=postgres
+
 # MySQL
 mysql.url=jdbc:mysql://localhost:3306/legal_dev?useSSL=false&serverTimezone=UTC
 mysql.user=root
 mysql.password=root123456
 ```
 
+## 初始化数据库（MySQL）
+在 `mysql.url` 指向的库中执行：
+- `sql/mysql_user_auth_schema.sql`（用户/会话/权限：`user_account` / `user_session` / `user_permission`）
+- `sql/mysql_agent_log_schema.sql`（日志：`qa_log` / `agent_task_history`）
+
+说明：
+- 法律条文表（`law_text` / `law_text_chunk`）为你的业务核心表，本仓库不自动创建（保持与你现有结构一致）。
+
+## 普通用户 vs 超级用户
+- 普通用户（`USER`）
+  - Web：登录后进入 `/app`，只能向 Agent 提问
+  - 默认注册会写入 `user_account`，并授予基础权限 `QA_ASK`
+  - 无权访问 `/admin`，也不能查看日志/批量导入
+- 超级用户（`SUPER_ADMIN`）
+  - Web：登录后进入 `/admin`
+  - 可查看用户使用日志：`qa_log` 与 `agent_task_history`
+  - 可批量导入文档（写入 `law_text`，并触发分片/向量入库）
+  - 可授予/撤销权限（`user_permission`）
+
+创建/重置超级用户：
+- 使用 CLI：运行 `ai.legal.console.LegalQaCli` 后输入 `:init-admin <username> <password>`
+- 或代码调用：`AuthService.ensureSuperAdmin(username, password)`
+
 ## 构建
 ```bash
 mvn clean package
 ```
 
-## 运行
-- 批量导入（增量、跳过已处理）：  
-  ```bash
-  java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.service.importer.LawTextToVectorImporter
-  ```
-- 修改策略（全量且不跳过）：将入口中的 `ImportPolicy.defaultPolicy()` 替换为 `new ImportPolicy(false, false, 400)` 再运行。
-- 单条示例：  
-  ```bash
-  java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.App
-  ```
+说明：推荐在 IDEA 运行 main（Maven 依赖会自动加入 classpath）。若你用 `java -cp target/*.jar` 直接跑，请确保依赖 jar 也在 classpath 中。
 
-## 用户注册 / 登录 / 超级用户（CLI）
-1) 先在 MySQL（`mysql.url` 对应库）执行：
-- `sql/mysql_user_auth_schema.sql`（用户/会话/权限表）
-- `sql/mysql_agent_log_schema.sql`（问答日志/任务历史表，可选但推荐）
-
-2) 运行命令行：
-```bash
-java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.console.LegalQaCli
-```
-
-3) 常用命令：
-- `:register <username> <password>`
-- `:login <username> <password>`
-- `:init-admin <username> <password>`（创建/重置超级用户，仅建议本地/运维使用）
-- `:grant <username> <PERMISSION_CODE>` / `:revoke ...`（超级用户）
-- `:list-user-perms <username>`（超级用户）
-
-## 后续接 Web 的入口（预留）
-- 注册/登录/会话鉴权：`src/main/java/ai/legal/service/auth/AuthService.java:1`
-- 超级用户权限管理：`src/main/java/ai/legal/service/auth/AdminService.java:1`
-
-## Web 雏形（HttpServer）
-1) 先在 MySQL（`mysql.url` 对应库）执行：
-- `sql/mysql_user_auth_schema.sql`
-- `sql/mysql_agent_log_schema.sql`（否则后台日志页面会查询不到表）
-
-2) 启动 Web Server：
+## 运行（Web）
+启动：
 ```bash
 java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.web.LegalWebServerApp
 ```
 
-3) 打开：
+页面：
 - `http://localhost:8080/login`（登录）
 - `http://localhost:8080/register`（注册）
 - `http://localhost:8080/app`（普通用户提问页）
 - `http://localhost:8080/admin`（超级用户后台：日志/批量导入/权限）
 
-## 导入逻辑概述
-- `ImportPolicy`：控制增量/跳过已处理、分片长度。
-- `LawTextDao.findUnprocessed()`：仅取未切片的条文；`hasChunks()` 判重。
-- `LawTextChunkService.processLawText(...)`：对单条条文分片 → 生成占位向量 → 写 PG `legal_embedding` → 写 MySQL `law_text_chunk`（vector_id = embedding.id），统计成功/失败。
-- `LawTextToVectorImporter`：遍历待处理条文，汇总成功/失败/跳过 ID 与耗时。
-- 向量生成目前为占位算法，后续接入真实 1536 维模型/API 时替换 `generateEmbedding`。
+## 运行（CLI）
+启动：
+```bash
+java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.console.LegalQaCli
+```
 
-## RAG 问答闭环
-- `LegalRagQaService.answer(userQuestion)`：将问题生成 1536 维占位向量 → `searchTopK` 取 5 条上下文 → `LegalRagPromptBuilder.buildPrompt` 拼装 Prompt → 调用 `LlmClient.chat` 返回回复。
-- `LlmClient` 为大模型接口占位，按需实现（如 HTTP 调用厂商 API）。
-- `LegalAgentService.answer(userQuestion)`：先用 `LegalIntentClassifier` 判断意图，若信息不足则用 `ClarificationPromptBuilder` 引导补充事实，否则走 `LegalRagQaService` 的标准 RAG 流程。
+常用命令：
+- `:register <username> <password>`
+- `:login <username> <password>`
+- `:logout` / `:whoami`
+- `:init-admin <username> <password>`
+- `:grant <username> <PERMISSION_CODE>` / `:revoke <username> <PERMISSION_CODE>`
+- `:list-user-perms <username>`
 
-## 结果验证
-- PostgreSQL（legal_vector）：查看新增向量  
-  ```sql
-  SELECT id, law_id, article_no, chunk_index, source, created_at
-  FROM legal_embedding
-  ORDER BY id DESC
-  LIMIT 20;
-  ```
-- MySQL（legal_dev）：查看切片与 vector_id  
-  ```sql
-  SELECT id, document_id, vector_id, chunk_order, LEFT(chunk_text, 50) AS preview, created_at
-  FROM law_text_chunk
-  ORDER BY id DESC
-  LIMIT 20;
+## RAG 与结构化直通（你需要知道的行为差异）
+- 结构化直通（SQL）适用：法条原文/章节/全文请求（例如包含“原文”“第X条”“第X章”“第X编”“全文/全部内容”等）
+  - 命中后：禁止走向量检索，直接查 MySQL 原文
+  - 未命中：直接提示“未找到匹配条文”，不会用其他条文凑答案
+- RAG（向量检索）适用：法律解释/适用/怎么做等开放问题
+  - 输出为两段：`法律依据` → `法律分析与建议`
+  - 若命中“条件/责任”类意图且事实不足，可能追问 1–3 个问题（同一 session 最多 2 轮）
 
-  SELECT document_id, COUNT(*) AS chunk_count
-  FROM law_text_chunk
-  GROUP BY document_id
-  ORDER BY document_id DESC;
-  ```
-确认 `law_text_chunk.vector_id` 等于 PostgreSQL `legal_embedding.id`，分片数量与切分一致。
+## 提示词（给小白照抄）
+见 `PROMPT_ENGINEER.md`。
 
-## 约束提醒
-- 仅使用 Java 标准库 + JDBC；禁止引入 Spring/JPA/Lombok 等。
-- 所有 SQL 使用 PreparedStatement。
-- 不修改既有表结构，向量维度固定 1536。
-- 后续每次代码更新请同步维护本 README。 
+## 常见报错排查
+- 报错：`Table 'xxx.user_account' doesn't exist`
+  - 原因：当前 `mysql.url` 指向的库里还没建用户/会话/权限表。
+  - 处理：在 `mysql.url` 指向的库执行 `sql/mysql_user_auth_schema.sql`，然后重启 Web/CLI。
+- 报错：`Table 'xxx.qa_log' doesn't exist` 或 `Table 'xxx.agent_task_history' doesn't exist`
+  - 原因：日志表未创建。
+  - 处理：在 `mysql.url` 指向的库执行 `sql/mysql_agent_log_schema.sql`，然后重启 Web/CLI。
+- 你在 `legal_ai` 建表但程序写不到
+  - 原因：程序只会连 `mysql.url` 指向的那个库；你实际运行时连到哪个库，以报错里的 `xxx.` 或 `mysql.url` 为准。
