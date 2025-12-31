@@ -21,11 +21,16 @@ public class LegalAnalysisPromptBuilder {
     public static String buildPrompt(String userQuestion, String legalBasis, List<AggregatedLawContext> contexts,
                                      boolean factsSufficient, String historyFacts) {
         StringBuilder sb = new StringBuilder();
+        boolean hasContexts = contexts != null && !contexts.isEmpty();
         sb.append("角色：你是法律智能助手，需在提供的法律依据框架内做审慎分析与建议。\n");
         sb.append("输入：用户问题 + 已整理的法律依据（禁止添加新法律）。\n");
         sb.append("规则：\n");
         sb.append("1) 仅基于下方“法律依据”和“检索到的条文”进行分析，不得编造新的法律规定。\n");
-        sb.append("2) 必须在分析中明确引用对应的条文或条号。\n");
+        if (hasContexts) {
+            sb.append("2) 必须在分析中明确引用对应的条文或条号。\n");
+        } else {
+            sb.append("2) 当前未提供可引用的条文：不得编造条号或引用；必须明确说明“未检索到可引用条文，依据有限”。\n");
+        }
         sb.append("3) 对不确定情形使用“可能/通常/一般情况下”等克制措辞，避免绝对化。\n");
         sb.append("4) 输出必须按顺序包含：\n");
         sb.append("   ① 初步法律结论（是否构成民间借贷/债权是否成立/可走的法律路径）。\n");
@@ -45,7 +50,7 @@ public class LegalAnalysisPromptBuilder {
                 .append(historyFacts == null ? "无" : historyFacts).append("\n\n");
         sb.append("法律依据：\n").append(legalBasis == null ? "" : legalBasis).append("\n\n");
         sb.append("检索到的法律条文（仅供引用，不得新增条文）：\n");
-        if (contexts != null) {
+        if (hasContexts) {
             for (int i = 0; i < contexts.size(); i++) {
                 AggregatedLawContext item = contexts.get(i);
                 sb.append(i + 1).append(") law_id=").append(item.getLawId())
@@ -53,6 +58,8 @@ public class LegalAnalysisPromptBuilder {
                         .append("，覆盖说明=").append(item.getCoverageNote()).append("\n");
                 sb.append(item.getContent()).append("\n\n");
             }
+        } else {
+            sb.append("（无）\n\n");
         }
         sb.append("用户问题：\n").append(userQuestion == null ? "" : userQuestion).append("\n\n");
         sb.append("请按照规则输出“法律分析与建议”，并附上免责声明。");

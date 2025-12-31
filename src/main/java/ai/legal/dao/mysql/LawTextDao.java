@@ -216,6 +216,60 @@ public class LawTextDao {
     }
 
     /**
+     * 跨法律全文关键词检索（全文/标题/法名/条号 LIKE 匹配），用于 RAG 召回失败的兜底。
+     */
+    public List<LawText> searchByKeywordsAcrossLaws(List<String> keywords, int limit) {
+        List<LawText> list = new ArrayList<>();
+        if (keywords == null || keywords.isEmpty()) {
+            return list;
+        }
+        List<String> cleaned = keywords.stream()
+                .filter(k -> k != null && !k.isBlank())
+                .map(String::trim)
+                .distinct()
+                .limit(10)
+                .toList();
+        if (cleaned.isEmpty()) {
+            return list;
+        }
+
+        StringBuilder sql = new StringBuilder();
+        sql.append("SELECT id, law_code, law_title, article_number, full_text, effective_date, created_at, updated_at ");
+        sql.append("FROM law_text WHERE ");
+        for (int i = 0; i < cleaned.size(); i++) {
+            if (i > 0) {
+                sql.append(" OR ");
+            }
+            sql.append("(full_text LIKE ? OR law_title LIKE ? OR law_code LIKE ? OR article_number LIKE ?)");
+        }
+        sql.append(" ORDER BY id ASC LIMIT ?");
+
+        int effectiveLimit = limit <= 0 ? 20 : limit;
+        try (Connection connection = getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql.toString())) {
+            int idx = 1;
+            for (String kw : cleaned) {
+                String likeKw = "%" + kw + "%";
+                statement.setString(idx++, likeKw);
+                statement.setString(idx++, likeKw);
+                statement.setString(idx++, likeKw);
+                statement.setString(idx++, likeKw);
+            }
+            statement.setInt(idx, effectiveLimit);
+
+            try (ResultSet rs = statement.executeQuery()) {
+                while (rs.next()) {
+                    list.add(mapRow(rs));
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("跨法律关键词查询 law_text 失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    /**
      * 插入一条 law_text 记录。
      *
      * @param lawText 条文
