@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>注册 - 法律智能问答系统</title>
+  <link rel="stylesheet" href="/assets/styles.css"/>
+</head>
+<body>
+<main class="container">
+  <div class="card">
+    <h1>注册</h1>
+    <p class="muted">注册成功后会写入 MySQL（user_account/user_permission）。</p>
+
+    <form id="registerForm" class="form">
+      <label>用户名
+        <input id="username" name="username" autocomplete="username" required minlength="3" maxlength="64"/>
+      </label>
+      <label>密码
+        <input id="password" name="password" type="password" autocomplete="new-password" required minlength="6"/>
+      </label>
+      <button class="btn primary" type="submit">注册</button>
+    </form>
+
+    <div id="msg" class="msg"></div>
+
+    <div class="footer">
+      <a href="/login">已有账号？去登录</a>
+    </div>
+  </div>
+</main>
+<script src="/assets/common.js"></script>
+<script src="/assets/register.js"></script>
+</body>
+</html>
+

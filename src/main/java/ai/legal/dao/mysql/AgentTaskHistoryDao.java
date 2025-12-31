@@ -95,4 +95,32 @@ public class AgentTaskHistoryDao {
         }
         return list;
     }
+
+    public List<AgentTaskHistory> findRecent(int limit) {
+        List<AgentTaskHistory> list = new ArrayList<>();
+        String sql = "SELECT id, session_id, user_query, intent_type, strategy_used, result_status, fail_reason, created_at " +
+                "FROM agent_task_history ORDER BY created_at DESC LIMIT ?";
+        try (Connection connection = MySqlConfig.getConnection();
+             PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setInt(1, limit <= 0 ? 50 : limit);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    AgentTaskHistory h = new AgentTaskHistory();
+                    h.setId(rs.getLong("id"));
+                    h.setSessionId(rs.getString("session_id"));
+                    h.setUserQuery(rs.getString("user_query"));
+                    h.setIntentType(rs.getString("intent_type"));
+                    h.setStrategyUsed(rs.getString("strategy_used"));
+                    h.setResultStatus(rs.getString("result_status"));
+                    h.setFailReason(rs.getString("fail_reason"));
+                    h.setCreatedAt(rs.getTimestamp("created_at"));
+                    list.add(h);
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("查询 agent_task_history 失败: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return list;
+    }
 }

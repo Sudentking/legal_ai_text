@@ -55,6 +55,43 @@ mvn clean package
   java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.App
   ```
 
+## 用户注册 / 登录 / 超级用户（CLI）
+1) 先在 MySQL（`mysql.url` 对应库）执行：
+- `sql/mysql_user_auth_schema.sql`（用户/会话/权限表）
+- `sql/mysql_agent_log_schema.sql`（问答日志/任务历史表，可选但推荐）
+
+2) 运行命令行：
+```bash
+java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.console.LegalQaCli
+```
+
+3) 常用命令：
+- `:register <username> <password>`
+- `:login <username> <password>`
+- `:init-admin <username> <password>`（创建/重置超级用户，仅建议本地/运维使用）
+- `:grant <username> <PERMISSION_CODE>` / `:revoke ...`（超级用户）
+- `:list-user-perms <username>`（超级用户）
+
+## 后续接 Web 的入口（预留）
+- 注册/登录/会话鉴权：`src/main/java/ai/legal/service/auth/AuthService.java:1`
+- 超级用户权限管理：`src/main/java/ai/legal/service/auth/AdminService.java:1`
+
+## Web 雏形（HttpServer）
+1) 先在 MySQL（`mysql.url` 对应库）执行：
+- `sql/mysql_user_auth_schema.sql`
+- `sql/mysql_agent_log_schema.sql`（否则后台日志页面会查询不到表）
+
+2) 启动 Web Server：
+```bash
+java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.web.LegalWebServerApp
+```
+
+3) 打开：
+- `http://localhost:8080/login`（登录）
+- `http://localhost:8080/register`（注册）
+- `http://localhost:8080/app`（普通用户提问页）
+- `http://localhost:8080/admin`（超级用户后台：日志/批量导入/权限）
+
 ## 导入逻辑概述
 - `ImportPolicy`：控制增量/跳过已处理、分片长度。
 - `LawTextDao.findUnprocessed()`：仅取未切片的条文；`hasChunks()` 判重。

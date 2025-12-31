@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>后台 - 法律智能问答系统</title>
+  <link rel="stylesheet" href="/assets/styles.css"/>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">Legal AI Admin</div>
+    <div class="spacer"></div>
+    <div id="who" class="muted"></div>
+    <a class="btn" href="/app">去提问页</a>
+    <button id="logoutBtn" class="btn">退出登录</button>
+  </div>
+</header>
+
+<main class="container">
+  <div class="grid">
+    <section class="card">
+      <h2>用户使用日志</h2>
+      <div class="form row">
+        <input id="logSessionId" placeholder="可选：按 sessionId 过滤"/>
+        <input id="logLimit" type="number" min="1" max="500" value="50"/>
+        <button id="loadQaLogs" class="btn primary" type="button">加载 qa_log</button>
+        <button id="loadTaskHistory" class="btn" type="button">加载 agent_task_history</button>
+      </div>
+      <pre id="logs" class="pre"></pre>
+    </section>
+
+    <section class="card">
+      <h2>批量导入文档（仅超级用户）</h2>
+      <p class="muted">支持 .docx/.pdf/.txt；输入文件路径或目录路径（每行一个）。</p>
+      <form id="importForm" class="form">
+        <label>路径列表
+          <textarea id="paths" name="paths" rows="6" placeholder="/path/a.docx&#10;/path/dir"></textarea>
+        </label>
+        <div class="row">
+          <label class="checkbox">
+            <input id="recursive" name="recursive" type="checkbox" checked/>
+            递归扫描目录
+          </label>
+          <label>分片大小
+            <input id="chunkSize" name="chunkSize" type="number" min="100" max="2000" value="400"/>
+          </label>
+          <label class="checkbox">
+            <input id="noSkip" name="noSkip" type="checkbox"/>
+            不跳过已处理
+          </label>
+        </div>
+        <button class="btn primary" type="submit">开始导入</button>
+      </form>
+      <pre id="importResult" class="pre"></pre>
+    </section>
+
+    <section class="card">
+      <h2>权限配置（可选）</h2>
+      <p class="muted">授予/撤销 user_permission（后续 Web 鉴权可直接复用）。</p>
+      <div class="form">
+        <label>用户名
+          <input id="permUser" placeholder="目标用户名"/>
+        </label>
+        <label>权限码（例如 QA_ASK / LAW_IMPORT / LOG_VIEW）
+          <input id="permCode" placeholder="PERMISSION_CODE"/>
+        </label>
+        <div class="row">
+          <button id="grantPerm" class="btn primary" type="button">授予</button>
+          <button id="revokePerm" class="btn" type="button">撤销</button>
+          <button id="listPerm" class="btn" type="button">查看直授权限</button>
+        </div>
+      </div>
+      <pre id="permResult" class="pre"></pre>
+    </section>
+  </div>
+</main>
+
+<script src="/assets/common.js"></script>
+<script src="/assets/admin.js"></script>
+</body>
+</html>
+

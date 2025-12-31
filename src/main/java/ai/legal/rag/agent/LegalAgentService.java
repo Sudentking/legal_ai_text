@@ -29,11 +29,6 @@ public class LegalAgentService {
     private final AgentTaskHistoryDao historyDao = new AgentTaskHistoryDao();
     private final AgentTaskHistoryService historyService = new AgentTaskHistoryService(historyDao);
     private final QaLogDao qaLogDao = new QaLogDao();
-    private final AgentStateMachine stateMachine = new AgentStateMachine();
-
-    private String sessionId = "default-session";
-    private Long currentUserId = 1L;
-    private int factCollectRounds = 0;
 
     public LegalAgentService(LegalIntentClassifier intentClassifier,
                              LegalRagQaService ragQaService,
@@ -46,35 +41,35 @@ public class LegalAgentService {
     }
 
     public String answer(String userQuestion) {
-        return answer(this.currentUserId, this.sessionId, userQuestion, "");
+        return answer(0L, "default-session", userQuestion, "");
     }
 
     public String answer(String userQuestion, String historyFacts) {
-        return answer(this.currentUserId, this.sessionId, userQuestion, historyFacts);
+        return answer(0L, "default-session", userQuestion, historyFacts);
     }
 
     public String answer(String sessionId, String userQuestion, String historyFacts) {
-        return answer(this.currentUserId, sessionId, userQuestion, historyFacts);
+        return answer(0L, sessionId, userQuestion, historyFacts);
     }
 
     public String answer(Long userId, String sessionId, String userQuestion, String historyFacts) {
-        if (sessionId != null && !sessionId.isBlank()) {
-            this.sessionId = sessionId;
-        }
-        if (userId != null) {
-            this.currentUserId = userId;
-        }
+        String effectiveSessionId = (sessionId == null || sessionId.isBlank()) ? "default-session" : sessionId.trim();
+        Long effectiveUserId = userId == null ? 0L : userId;
+
         String question = userQuestion == null ? "" : userQuestion.trim();
         if (question.isEmpty()) {
             return "";
         }
 
         // 每轮回答前必须读取最近历史，用于确定性决策（不得拼进 Prompt）
-        List<AgentTaskHistory> recent = historyService.findRecent(this.sessionId, 3);
-        boolean blockRagByHistory = historyService.recentRagFailedSameQuery(recent, question);
+        List<AgentTaskHistory> recent = historyService.findRecent(effectiveSessionId, 10);
+        boolean blockRagByHistory = historyService.recentRagFailedSameQuery(
+                recent.size() > 3 ? recent.subList(0, 3) : recent, question);
+        int factCollectRounds = countConsecutiveFactChecks(recent);
 
+        AgentStateMachine stateMachine = new AgentStateMachine();
         stateMachine.reset();
-        long qaLogId = qaLogDao.insertInit(new QaLog(this.currentUserId, this.sessionId, question, "PENDING", stateMachine.getState().name()));
+        long qaLogId = qaLogDao.insertInit(new QaLog(effectiveUserId, effectiveSessionId, question, "PENDING", stateMachine.getState().name()));
 
         long historyId = -1L;
         FsmAgentState finalState = stateMachine.getState();
@@ -86,7 +81,7 @@ public class LegalAgentService {
                 finalState = stateMachine.next(LegalIntentType.LAW_TEXT_QUERY, true, true);
 
                 historyId = historyDao.insertHistory(new AgentTaskHistory(
-                        this.sessionId, question, LegalIntentType.LAW_TEXT_QUERY.name(), "SQL", "PENDING", null));
+                        effectiveSessionId, question, LegalIntentType.LAW_TEXT_QUERY.name(), "SQL", "PENDING", null));
 
                 String structured = structuredLawQueryService.answerIfStructured(question);
                 String result = structured != null
@@ -102,7 +97,7 @@ public class LegalAgentService {
             if (blockRagByHistory) {
                 String structured = structuredLawQueryService.answerIfStructured(question);
                 historyId = historyDao.insertHistory(new AgentTaskHistory(
-                        this.sessionId, question, null, "SQL", "PENDING", null));
+                        effectiveSessionId, question, null, "SQL", "PENDING", null));
                 if (structured != null) {
                     historyDao.updateResult(historyId, "SUCCESS", null);
                     qaLogDao.updateResult(qaLogId, structured, "SUCCESS", FsmAgentState.DIRECT_LAW_QUERY.name(), null);
@@ -123,7 +118,7 @@ public class LegalAgentService {
             if (intentType == LegalIntentType.LAW_TEXT_QUERY) {
                 finalState = stateMachine.next(intentType, false, true);
                 historyId = historyDao.insertHistory(new AgentTaskHistory(
-                        this.sessionId,
+                        effectiveSessionId,
                         question,
                         intentType.name(),
                         "SQL",
@@ -148,14 +143,13 @@ public class LegalAgentService {
             // 4) 事实核查：最多 2 轮追问；用户明确要结论则强制作答
             if (next == FsmAgentState.FACT_CHECK && !factsSufficient && factCollectRounds < 2 && !directAsk) {
                 historyId = historyDao.insertHistory(new AgentTaskHistory(
-                        this.sessionId,
+                        effectiveSessionId,
                         question,
                         intentType == null ? null : intentType.name(),
                         "FACT_CHECK",
                         "PENDING",
                         null
                 ));
-                factCollectRounds++;
                 String prompt = ClarificationPromptBuilder.build(question,
                         intentResult == null ? "需要补充关键事实" : intentResult.getReason(),
                         historyFacts);
@@ -167,7 +161,7 @@ public class LegalAgentService {
 
             // 5) 进入 RAG + LLM 输出
             historyId = historyDao.insertHistory(new AgentTaskHistory(
-                    this.sessionId,
+                    effectiveSessionId,
                     question,
                     intentType == null ? null : intentType.name(),
                     "VECTOR",
@@ -176,7 +170,6 @@ public class LegalAgentService {
             ));
             finalState = stateMachine.next(intentType, false, factsSufficient); // RAG_RETRIEVAL -> LLM_ANSWER
             String result = ragQaService.answerWithReasoning(question, factsSufficient, historyFacts);
-            factCollectRounds = 0;
 
             historyDao.updateResult(historyId, "SUCCESS", null);
             qaLogDao.updateResult(qaLogId, result, "SUCCESS", finalState.name(), null);
@@ -187,6 +180,25 @@ public class LegalAgentService {
             qaLogDao.updateResult(qaLogId, null, "FAIL", finalState.name(), failReason);
             return "系统处理失败：" + failReason;
         }
+    }
+
+    private int countConsecutiveFactChecks(List<AgentTaskHistory> recent) {
+        if (recent == null || recent.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (AgentTaskHistory h : recent) {
+            String s = h == null ? null : h.getStrategyUsed();
+            if (s == null) {
+                break;
+            }
+            if ("FACT_CHECK".equalsIgnoreCase(s.trim())) {
+                count++;
+            } else {
+                break;
+            }
+        }
+        return count;
     }
 
     private boolean isLawLocator(String userQuestion) {

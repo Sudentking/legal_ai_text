@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>提问 - 法律智能问答系统</title>
+  <link rel="stylesheet" href="/assets/styles.css"/>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">Legal AI</div>
+    <div class="spacer"></div>
+    <div id="who" class="muted"></div>
+    <button id="logoutBtn" class="btn">退出登录</button>
+  </div>
+</header>
+
+<main class="container">
+  <div class="card">
+    <h1>向 Agent 提问</h1>
+    <p class="muted">仅登录用户可提问；提问与回答会写入日志表（qa_log/agent_task_history）。</p>
+
+    <div id="chat" class="chat"></div>
+
+    <form id="askForm" class="form row">
+      <input id="question" name="question" placeholder="请输入问题，例如：欠钱不还怎么办？" required/>
+      <button class="btn primary" type="submit">发送</button>
+    </form>
+
+    <div id="msg" class="msg"></div>
+  </div>
+</main>
+
+<script src="/assets/common.js"></script>
+<script src="/assets/app.js"></script>
+</body>
+</html>
+

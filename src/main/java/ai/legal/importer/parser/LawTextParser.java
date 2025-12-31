@@ -14,9 +14,10 @@ import java.util.regex.Pattern;
  */
 public class LawTextParser {
 
-    private static final Pattern CHAPTER_PATTERN = Pattern.compile("第[一二三四五六七八九十百0-9]+章\\s*(.*)");
+    private static final Pattern PART_PATTERN = Pattern.compile("第[一二三四五六七八九十百千两〇零0-9]+编\\s*(.*)");
+    private static final Pattern CHAPTER_PATTERN = Pattern.compile("第[一二三四五六七八九十百千两〇零0-9]+章\\s*(.*)");
     // 捕获“第X条”作为组1，避免将后续标题/正文放入条号
-    private static final Pattern ARTICLE_PATTERN = Pattern.compile("^(第[一二三四五六七八九十百0-9]+条)");
+    private static final Pattern ARTICLE_PATTERN = Pattern.compile("^(第[一二三四五六七八九十百千两〇零0-9]+条)");
 
     /**
      * 将全文解析为 LawText 列表。
@@ -33,6 +34,7 @@ public class LawTextParser {
         String[] lines = fullText.split("\\r?\\n");
         String lawTitle = deriveLawTitle(source);
         String lawCode = lawTitle;
+        String currentPart = null;
         String currentChapter = null;
 
         String currentArticleNo = null;
@@ -43,8 +45,26 @@ public class LawTextParser {
             if (line.isEmpty()) {
                 continue;
             }
+            Matcher partMatcher = PART_PATTERN.matcher(line);
+            if (partMatcher.matches()) {
+                // 避免将“编”标题错误挂到上一条：先落库上一条，再切换编/章上下文
+                if (currentArticleNo != null && currentContent.length() > 0) {
+                    result.add(buildLawText(lawCode, lawTitle, currentPart, currentChapter, currentArticleNo, currentContent.toString()));
+                    currentArticleNo = null;
+                    currentContent.setLength(0);
+                }
+                currentPart = line;
+                currentChapter = null; // 编切换后章节应重置
+                continue;
+            }
             Matcher chapterMatcher = CHAPTER_PATTERN.matcher(line);
             if (chapterMatcher.matches()) {
+                // 避免将“章”标题错误挂到上一条：先落库上一条，再切换章上下文
+                if (currentArticleNo != null && currentContent.length() > 0) {
+                    result.add(buildLawText(lawCode, lawTitle, currentPart, currentChapter, currentArticleNo, currentContent.toString()));
+                    currentArticleNo = null;
+                    currentContent.setLength(0);
+                }
                 currentChapter = line;
                 continue;
             }
@@ -52,7 +72,7 @@ public class LawTextParser {
             if (articleMatcher.find()) {
                 // 结束上一条
                 if (currentArticleNo != null && currentContent.length() > 0) {
-                    result.add(buildLawText(lawCode, lawTitle, currentChapter, currentArticleNo, currentContent.toString()));
+                    result.add(buildLawText(lawCode, lawTitle, currentPart, currentChapter, currentArticleNo, currentContent.toString()));
                 }
                 // 开始新条
                 currentArticleNo = articleMatcher.group(1); // 只取“第X条”，避免正文溢出
@@ -66,13 +86,19 @@ public class LawTextParser {
         }
         // 收尾
         if (currentArticleNo != null && currentContent.length() > 0) {
-            result.add(buildLawText(lawCode, lawTitle, currentChapter, currentArticleNo, currentContent.toString()));
+            result.add(buildLawText(lawCode, lawTitle, currentPart, currentChapter, currentArticleNo, currentContent.toString()));
         }
         return result;
     }
 
-    private LawText buildLawText(String lawCode, String lawTitle, String chapterTitle, String articleNo, String content) {
-        String title = chapterTitle == null ? lawTitle : lawTitle + " " + chapterTitle;
+    private LawText buildLawText(String lawCode, String lawTitle, String partTitle, String chapterTitle, String articleNo, String content) {
+        String title = lawTitle;
+        if (partTitle != null && !partTitle.isBlank()) {
+            title = title + " " + partTitle;
+        }
+        if (chapterTitle != null && !chapterTitle.isBlank()) {
+            title = title + " " + chapterTitle;
+        }
         LawText lawText = new LawText();
         lawText.setLawCode(lawCode);
         lawText.setLawTitle(title);

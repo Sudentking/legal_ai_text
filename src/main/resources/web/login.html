@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>登录 - 法律智能问答系统</title>
+  <link rel="stylesheet" href="/assets/styles.css"/>
+</head>
+<body>
+<main class="container">
+  <div class="card">
+    <h1>登录</h1>
+    <p class="muted">登录后：普通用户进入提问页；超级用户进入后台。</p>
+
+    <form id="loginForm" class="form">
+      <label>用户名
+        <input id="username" name="username" autocomplete="username" required minlength="3" maxlength="64"/>
+      </label>
+      <label>密码
+        <input id="password" name="password" type="password" autocomplete="current-password" required minlength="6"/>
+      </label>
+      <button class="btn primary" type="submit">登录</button>
+    </form>
+
+    <div id="msg" class="msg"></div>
+
+    <div class="footer">
+      <a href="/register">没有账号？去注册</a>
+    </div>
+  </div>
+</main>
+<script src="/assets/common.js"></script>
+<script src="/assets/login.js"></script>
+</body>
+</html>
+

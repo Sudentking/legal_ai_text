@@ -4,6 +4,7 @@ import ai.legal.dao.mysql.LawTextDao;
 import ai.legal.model.LawText;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -51,9 +52,25 @@ public class StructuredLawQueryService {
             return "未在数据库找到包含关键词【" + query.keyword + "】的条文，请尝试调整关键词。";
         }
         if (query.chapter != null || query.partOrSection != null) {
-            String kw1 = query.chapter != null ? query.chapter : query.partOrSection;
-            String kw2 = query.chapter != null ? query.chapterAlt : query.partOrSectionAlt;
-            List<LawText> byChapter = lawTextDao.findByLawNameAndChapter(query.lawName, kw1, kw2);
+            List<LawText> byChapter;
+            // 同时包含“第X编 + 第X章”时必须双条件命中，避免把其他编的“第一章”等混入
+            if (query.chapter != null && query.partOrSection != null) {
+                byChapter = lawTextDao.findByLawNameAndTwoTitleKeywords(
+                        query.lawName,
+                        query.partOrSection,
+                        query.partOrSectionAlt,
+                        query.chapter,
+                        query.chapterAlt
+                );
+                // 若为“编+章”查询，尝试按下一章边界补全缺失条文（例如第十二条缺失但第十三条已在第二章）
+                if (!byChapter.isEmpty() && query.chapterNo != null && query.partOrSection.endsWith("编")) {
+                    byChapter = expandByChapterRange(query, byChapter);
+                }
+            } else {
+                String kw1 = query.chapter != null ? query.chapter : query.partOrSection;
+                String kw2 = query.chapter != null ? query.chapterAlt : query.partOrSectionAlt;
+                byChapter = lawTextDao.findByLawNameAndChapter(query.lawName, kw1, kw2);
+            }
             if (!byChapter.isEmpty()) {
                 return formatLawTexts(byChapter, "未在数据库找到对应章节");
             }
@@ -107,6 +124,10 @@ public class StructuredLawQueryService {
         if (chapterToken != null) {
             query.chapter = "第" + chapterToken.chinese + "章";
             query.chapterAlt = chapterToken.arabic == null ? null : ("第" + chapterToken.arabic + "章");
+            if (chapterToken.arabic != null) {
+                int no = parseSafeInt(chapterToken.arabic);
+                query.chapterNo = no > 0 ? no : null;
+            }
         }
         if (articleToken != null) {
             query.article = "第" + articleToken.chinese + "条";
@@ -292,7 +313,8 @@ public class StructuredLawQueryService {
             return emptyMessage;
         }
         StringBuilder sb = new StringBuilder();
-        for (LawText lt : new ArrayList<>(lawTexts)) {
+        List<LawText> sorted = sortByArticleNumber(lawTexts);
+        for (LawText lt : sorted) {
             sb.append(safe(lt.getLawTitle()));
             if (lt.getArticleNumber() != null && !lt.getArticleNumber().isEmpty()) {
                 sb.append(" ").append(lt.getArticleNumber());
@@ -310,6 +332,7 @@ public class StructuredLawQueryService {
         String lawName;
         String chapter;
         String chapterAlt;
+        Integer chapterNo;
         String article;
         String articleAlt;
         String partOrSection;
@@ -326,5 +349,87 @@ public class StructuredLawQueryService {
     private static class PartToken {
         NumberToken number;
         String unit;
+    }
+
+    private List<LawText> expandByChapterRange(StructuredQuery query, List<LawText> currentChapter) {
+        Integer start = minArticleNo(currentChapter);
+        if (start == null) {
+            return currentChapter;
+        }
+        Integer nextChapterNo = query.chapterNo == null ? null : query.chapterNo + 1;
+        if (nextChapterNo == null || nextChapterNo <= 0) {
+            return currentChapter;
+        }
+        String nextChapterChinese = "第" + toChineseNumber(nextChapterNo) + "章";
+        String nextChapterArabic = "第" + nextChapterNo + "章";
+        List<LawText> nextChapter = lawTextDao.findByLawNameAndTwoTitleKeywords(
+                query.lawName,
+                query.partOrSection,
+                query.partOrSectionAlt,
+                nextChapterChinese,
+                nextChapterArabic
+        );
+        Integer boundary = minArticleNo(nextChapter);
+        if (boundary == null || boundary <= start) {
+            return currentChapter;
+        }
+        List<LawText> inPart = lawTextDao.findByLawNameAndChapter(query.lawName, query.partOrSection, query.partOrSectionAlt);
+        if (inPart.isEmpty()) {
+            return currentChapter;
+        }
+        List<LawText> filtered = new ArrayList<>();
+        for (LawText lt : inPart) {
+            Integer art = parseArticleNoFromArticleNumber(lt == null ? null : lt.getArticleNumber());
+            if (art != null && art >= start && art < boundary) {
+                filtered.add(lt);
+            }
+        }
+        return filtered.isEmpty() ? currentChapter : filtered;
+    }
+
+    private List<LawText> sortByArticleNumber(List<LawText> lawTexts) {
+        List<LawText> copy = new ArrayList<>(lawTexts);
+        copy.sort(Comparator.comparingInt(o -> {
+            Integer art = parseArticleNoFromArticleNumber(o == null ? null : o.getArticleNumber());
+            return art == null ? Integer.MAX_VALUE : art;
+        }));
+        return copy;
+    }
+
+    private Integer minArticleNo(List<LawText> list) {
+        if (list == null || list.isEmpty()) {
+            return null;
+        }
+        Integer min = null;
+        for (LawText lt : list) {
+            Integer art = parseArticleNoFromArticleNumber(lt == null ? null : lt.getArticleNumber());
+            if (art == null) {
+                continue;
+            }
+            if (min == null || art < min) {
+                min = art;
+            }
+        }
+        return min;
+    }
+
+    private Integer parseArticleNoFromArticleNumber(String articleNumber) {
+        if (articleNumber == null || articleNumber.isBlank()) {
+            return null;
+        }
+        Matcher m = Pattern.compile("第([一二三四五六七八九十百千两0-9]+)条").matcher(articleNumber.replaceAll("\\s+", ""));
+        if (!m.find()) {
+            return null;
+        }
+        String token = m.group(1);
+        if (token == null || token.isBlank()) {
+            return null;
+        }
+        if (token.matches("\\d+")) {
+            int n = parseSafeInt(token);
+            return n > 0 ? n : null;
+        }
+        Integer n = toArabicNumber(token);
+        return n != null && n > 0 ? n : null;
     }
 }
