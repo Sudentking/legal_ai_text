@@ -81,6 +81,10 @@ input:focus, textarea:focus { border-color: rgba(91,140,255,0.8); }
   background: linear-gradient(180deg, var(--primary), var(--primary-2));
   border-color: rgba(91,140,255,0.9);
 }
+.btn.danger {
+  background: linear-gradient(180deg, rgba(255,91,91,0.95), rgba(214,55,55,0.95));
+  border-color: rgba(255,91,91,0.9);
+}
 
 .footer { margin-top: 12px; }
 .footer a { color: var(--primary); text-decoration: none; }
@@ -134,4 +138,3 @@ input:focus, textarea:focus { border-color: rgba(91,140,255,0.8); }
 
 .checkbox { flex-direction: row; align-items: center; gap: 8px; }
 .checkbox input { width: auto; }
-

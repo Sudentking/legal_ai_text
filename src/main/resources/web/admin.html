@@ -31,6 +31,35 @@
     </section>
 
     <section class="card">
+      <h2>知识库管理</h2>
+      <div class="form">
+        <div class="row">
+          <input id="kbLimit" type="number" min="1" max="500" value="100"/>
+          <button id="loadKbLaws" class="btn primary" type="button">加载法律列表（按 law_code 聚合）</button>
+        </div>
+        <div class="row">
+          <input id="kbLawCode" placeholder="law_code 过滤（模糊匹配，例如：民法典）"/>
+          <input id="kbArticleLimit" type="number" min="1" max="500" value="50"/>
+          <input id="kbOffset" type="number" min="0" max="1000000" value="0"/>
+          <button id="loadKbArticles" class="btn" type="button">加载条文列表</button>
+        </div>
+        <div class="row">
+          <input id="kbArticleId" placeholder="条文 id（law_text.id）"/>
+          <button id="loadKbArticle" class="btn" type="button">查看条文原文</button>
+          <button id="deleteKbArticle" class="btn danger" type="button">删除条文</button>
+          <button id="rebuildKbArticle" class="btn" type="button">重建条文切片/向量</button>
+          <input id="kbChunkSize" type="number" min="100" max="2000" value="400" title="重建分片大小"/>
+        </div>
+        <div class="row">
+          <button id="deleteKbLaw" class="btn danger" type="button">删除整部法律（按 law_code）</button>
+          <button id="rebuildKbLaw" class="btn" type="button">重建整部法律切片/向量</button>
+          <button id="checkKbQuality" class="btn" type="button">质量检查（按 law_code）</button>
+        </div>
+      </div>
+      <pre id="kb" class="pre"></pre>
+    </section>
+
+    <section class="card">
       <h2>批量导入文档（仅超级用户）</h2>
       <p class="muted">支持 .docx/.pdf/.txt；输入文件路径或目录路径（每行一个）。</p>
       <form id="importForm" class="form">
@@ -80,4 +109,3 @@
 <script src="/assets/admin.js"></script>
 </body>
 </html>
-

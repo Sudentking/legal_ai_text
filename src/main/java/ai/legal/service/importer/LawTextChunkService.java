@@ -6,19 +6,18 @@ import ai.legal.model.LawTextChunk;
 import ai.legal.model.LegalEmbedding;
 import ai.legal.service.VectorSearchService;
 import ai.legal.util.TextSplitter;
+import ai.legal.util.EmbeddingUtil;
 import ai.legal.service.importer.ImportPolicy;
 import ai.legal.service.importer.LawTextProcessResult;
 
 import java.sql.SQLException;
 import java.util.List;
-import java.util.UUID;
 
 /**
  * 将 LawText 分片并写入向量库与 MySQL 切片表。
  */
 public class LawTextChunkService {
 
-    private static final int VECTOR_DIMENSION = 1536;
     private static final int DEFAULT_CHUNK_SIZE = 400;
 
     private final VectorSearchService vectorSearchService;
@@ -58,7 +57,7 @@ public class LawTextChunkService {
         int failedChunks = 0;
         for (LawTextChunk chunk : chunks) {
             try {
-                double[] embeddingVector = generateEmbedding(chunk.getChunkText());
+                double[] embeddingVector = EmbeddingUtil.embed(chunk.getChunkText());
                 LegalEmbedding embedding = new LegalEmbedding(
                         lawText.getId(),
                         lawText.getArticleNumber(),
@@ -92,21 +91,5 @@ public class LawTextChunkService {
         boolean success = failedChunks == 0 && successChunks > 0;
         String message = success ? "全部成功" : "存在失败";
         return new LawTextProcessResult(documentId, false, success, successChunks, failedChunks, message);
-    }
-
-    /**
-     * 将字符串映射为 1536 维向量，此处用确定性生成器模拟 API 返回。
-     *
-     * @param text 待编码文本
-     * @return 1536 维向量
-     */
-    private double[] generateEmbedding(String text) {
-        double[] vector = new double[VECTOR_DIMENSION];
-        String seed = text == null ? UUID.randomUUID().toString() : text;
-        int base = seed.hashCode();
-        for (int i = 0; i < VECTOR_DIMENSION; i++) {
-            vector[i] = (Math.sin(base + i) + 1) * 0.5;
-        }
-        return vector;
     }
 }

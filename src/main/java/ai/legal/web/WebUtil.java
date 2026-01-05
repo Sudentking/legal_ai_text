@@ -156,5 +156,15 @@ public final class WebUtil {
             return def;
         }
     }
-}
 
+    public static long parseLong(String s, long def) {
+        if (s == null || s.isBlank()) {
+            return def;
+        }
+        try {
+            return Long.parseLong(s.trim());
+        } catch (Exception e) {
+            return def;
+        }
+    }
+}

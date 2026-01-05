@@ -2,6 +2,7 @@ package ai.legal.rag.agent;
 
 import ai.legal.dao.mysql.AgentTaskHistoryDao;
 import ai.legal.dao.mysql.QaLogDao;
+import ai.legal.dao.mysql.SessionFactDao;
 import ai.legal.model.AgentTaskHistory;
 import ai.legal.model.QaLog;
 import ai.legal.rag.intent.LegalIntentClassifier;
@@ -13,8 +14,12 @@ import ai.legal.rag.service.LegalRagQaService;
 import ai.legal.rag.service.LlmClient;
 import ai.legal.rag.service.StructuredLawQueryService;
 import ai.legal.service.AgentTaskHistoryService;
+import ai.legal.service.memory.DeterministicFollowUpGenerator;
+import ai.legal.service.memory.SessionFactService;
+import ai.legal.service.tool.DeterministicToolchainService;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 法律智能 Agent（显式状态机 + 两阶段日志）。
@@ -29,6 +34,9 @@ public class LegalAgentService {
     private final AgentTaskHistoryDao historyDao = new AgentTaskHistoryDao();
     private final AgentTaskHistoryService historyService = new AgentTaskHistoryService(historyDao);
     private final QaLogDao qaLogDao = new QaLogDao();
+    private final SessionFactDao sessionFactDao = new SessionFactDao();
+    private final SessionFactService sessionFactService = new SessionFactService(sessionFactDao);
+    private final DeterministicToolchainService toolchainService = new DeterministicToolchainService();
 
     public LegalAgentService(LegalIntentClassifier intentClassifier,
                              LegalRagQaService ragQaService,
@@ -60,6 +68,9 @@ public class LegalAgentService {
         if (question.isEmpty()) {
             return "";
         }
+
+        // 在写入本轮日志前，先用上一轮内容做“事实记忆”抽取（失败不影响主流程）
+        String effectiveHistoryFacts = resolveHistoryFacts(effectiveSessionId, question, historyFacts);
 
         // 每轮回答前必须读取最近历史，用于确定性决策（不得拼进 Prompt）
         List<AgentTaskHistory> recent = historyService.findRecent(effectiveSessionId, 10);
@@ -134,8 +145,7 @@ public class LegalAgentService {
                 return result;
             }
 
-            boolean factsSufficient = factSufficiencyEvaluator.isLoanFactsSufficient(
-                    historyFacts == null || historyFacts.isBlank() ? question : (question + "\n" + historyFacts));
+            boolean factsSufficient = factSufficiencyEvaluator.isFactsSufficient(intentType, question, effectiveHistoryFacts);
 
             FsmAgentState next = stateMachine.next(intentType, false, factsSufficient);
             finalState = next;
@@ -150,10 +160,14 @@ public class LegalAgentService {
                         "PENDING",
                         null
                 ));
-                String prompt = ClarificationPromptBuilder.build(question,
-                        intentResult == null ? "需要补充关键事实" : intentResult.getReason(),
-                        historyFacts);
-                String followUp = safeAskClarification(prompt, question);
+                Map<String, String> factMap = sessionFactService.getFactMap(effectiveSessionId, 50);
+                String followUp = DeterministicFollowUpGenerator.generate(question, intentType, factMap, effectiveHistoryFacts);
+                if (followUp == null || followUp.isBlank()) {
+                    String prompt = ClarificationPromptBuilder.build(question,
+                            intentResult == null ? "需要补充关键事实" : intentResult.getReason(),
+                            effectiveHistoryFacts);
+                    followUp = safeAskClarification(prompt, question);
+                }
                 historyDao.updateResult(historyId, "SUCCESS", null);
                 qaLogDao.updateResult(qaLogId, followUp, "SUCCESS", FsmAgentState.FACT_CHECK.name(), null);
                 return followUp;
@@ -169,11 +183,32 @@ public class LegalAgentService {
                     null
             ));
             finalState = stateMachine.next(intentType, false, factsSufficient); // RAG_RETRIEVAL -> LLM_ANSWER
-            String result = ragQaService.answerWithReasoning(question, factsSufficient, historyFacts);
-
+            String result = ragQaService.answerWithReasoning(question, factsSufficient, effectiveHistoryFacts);
             historyDao.updateResult(historyId, "SUCCESS", null);
-            qaLogDao.updateResult(qaLogId, result, "SUCCESS", finalState.name(), null);
-            return result;
+
+            String finalAnswer = result;
+            long toolHistoryId = -1L;
+            try {
+                String appendix = toolchainService.buildAppendix(question, intentType, effectiveHistoryFacts);
+                if (appendix != null && !appendix.isBlank()) {
+                    toolHistoryId = historyDao.insertHistory(new AgentTaskHistory(
+                            effectiveSessionId,
+                            question,
+                            intentType == null ? null : intentType.name(),
+                            "TOOL",
+                            "PENDING",
+                            null
+                    ));
+                    finalAnswer = result + "\n\n" + appendix.trim();
+                    historyDao.updateResult(toolHistoryId, "SUCCESS", null);
+                }
+            } catch (Exception toolEx) {
+                String toolFail = toolEx.getMessage() == null ? toolEx.getClass().getSimpleName() : toolEx.getMessage();
+                historyDao.updateResult(toolHistoryId, "FAIL", toolFail);
+            }
+
+            qaLogDao.updateResult(qaLogId, finalAnswer, "SUCCESS", finalState.name(), null);
+            return finalAnswer;
         } catch (Exception e) {
             String failReason = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             historyDao.updateResult(historyId, "FAIL", failReason);
@@ -249,5 +284,36 @@ public class LegalAgentService {
                 "1. 请简要说明事情经过（谁与谁、何时、做了什么）。",
                 "2. 是否有关键证据（合同/借条/聊天记录/转账凭证）？分别有什么？",
                 "3. 你希望得到的具体目标是什么（确认权利义务/是否有效/如何维权）？");
+    }
+
+    private String resolveHistoryFacts(String sessionId, String currentUserInput, String providedHistoryFacts) {
+        try {
+            if (providedHistoryFacts != null && !providedHistoryFacts.isBlank()) {
+                sessionFactService.ingestHistoryFactsText(sessionId, providedHistoryFacts);
+            }
+            String lastAgentAnswer = null;
+            List<QaLog> recentQa = qaLogDao.findRecentBySession(sessionId, 5);
+            if (recentQa != null) {
+                for (QaLog log : recentQa) {
+                    if (log == null) {
+                        continue;
+                    }
+                    String a = log.getAnswer();
+                    String status = log.getStatus();
+                    if (a != null && !a.isBlank() && (status == null || "SUCCESS".equalsIgnoreCase(status))) {
+                        lastAgentAnswer = a;
+                        break;
+                    }
+                }
+            }
+            sessionFactService.ingestUserTurn(sessionId, currentUserInput, lastAgentAnswer);
+            String built = sessionFactService.buildHistoryFactsText(sessionId, 30);
+            if (built != null && !built.isBlank()) {
+                return built;
+            }
+        } catch (Exception ignored) {
+            // 事实记忆为辅助能力，任何异常都不应影响主流程
+        }
+        return providedHistoryFacts == null ? "" : providedHistoryFacts.trim();
     }
 }

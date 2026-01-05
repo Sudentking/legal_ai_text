@@ -4,6 +4,8 @@ import ai.legal.importer.LawDocumentBatchImportRequest;
 import ai.legal.importer.LawDocumentImportBatchResult;
 import ai.legal.importer.LawDocumentImportFileResult;
 import ai.legal.model.AgentTaskHistory;
+import ai.legal.model.LawCodeSummary;
+import ai.legal.model.LawText;
 import ai.legal.model.PermissionCode;
 import ai.legal.model.QaLog;
 import ai.legal.model.UserAccount;
@@ -54,6 +56,15 @@ public final class LegalWebHandlers {
         server.createContext("/api/admin/permission/grant", new AdminGrantPermissionHandler(ctx));
         server.createContext("/api/admin/permission/revoke", new AdminRevokePermissionHandler(ctx));
         server.createContext("/api/admin/permission/list", new AdminListPermissionHandler(ctx));
+
+        server.createContext("/api/admin/kb/laws", new AdminKbLawsHandler(ctx));
+        server.createContext("/api/admin/kb/articles", new AdminKbArticlesHandler(ctx));
+        server.createContext("/api/admin/kb/article", new AdminKbArticleHandler(ctx));
+        server.createContext("/api/admin/kb/delete/article", new AdminKbDeleteArticleHandler(ctx));
+        server.createContext("/api/admin/kb/delete/law", new AdminKbDeleteLawHandler(ctx));
+        server.createContext("/api/admin/kb/rebuild/article", new AdminKbRebuildArticleHandler(ctx));
+        server.createContext("/api/admin/kb/rebuild/law", new AdminKbRebuildLawHandler(ctx));
+        server.createContext("/api/admin/kb/quality", new AdminKbQualityHandler(ctx));
     }
 
     private record AuthInfo(String sessionId, UserAccount user) {
@@ -802,6 +813,298 @@ public final class LegalWebHandlers {
             } catch (Exception e) {
                 json(exchange, 400, Map.of("success", false, "message", e.getMessage() == null ? "list_failed" : e.getMessage()));
             }
+        }
+    }
+
+    private static final class AdminKbLawsHandler implements HttpHandler {
+        private final WebAppContext ctx;
+
+        private AdminKbLawsHandler(WebAppContext ctx) {
+            this.ctx = ctx;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                methodNotAllowed(exchange);
+                return;
+            }
+            AuthInfo auth = authenticate(ctx, exchange);
+            if (auth == null) {
+                json(exchange, 401, Map.of("success", false, "message", "UNAUTHORIZED"));
+                return;
+            }
+            if (!isSuperAdmin(auth.user())) {
+                json(exchange, 403, Map.of("success", false, "message", "FORBIDDEN"));
+                return;
+            }
+            Map<String, String> q = WebUtil.parseQuery(exchange.getRequestURI().getQuery());
+            int limit = WebUtil.parseInt(q.get("limit"), 100);
+            List<LawCodeSummary> summaries = ctx.getLawTextDao().listLawSummaries(limit);
+            List<Map<String, Object>> out = new ArrayList<>();
+            for (LawCodeSummary s : summaries) {
+                out.add(Map.of(
+                        "lawCode", s.getLawCode(),
+                        "lawTitleSample", s.getLawTitleSample(),
+                        "articleCount", s.getArticleCount(),
+                        "chunkCount", s.getChunkCount(),
+                        "vectorCount", s.getVectorCount()
+                ));
+            }
+            json(exchange, 200, Map.of("success", true, "laws", out));
+        }
+    }
+
+    private static final class AdminKbArticlesHandler implements HttpHandler {
+        private final WebAppContext ctx;
+
+        private AdminKbArticlesHandler(WebAppContext ctx) {
+            this.ctx = ctx;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                methodNotAllowed(exchange);
+                return;
+            }
+            AuthInfo auth = authenticate(ctx, exchange);
+            if (auth == null) {
+                json(exchange, 401, Map.of("success", false, "message", "UNAUTHORIZED"));
+                return;
+            }
+            if (!isSuperAdmin(auth.user())) {
+                json(exchange, 403, Map.of("success", false, "message", "FORBIDDEN"));
+                return;
+            }
+            Map<String, String> q = WebUtil.parseQuery(exchange.getRequestURI().getQuery());
+            String lawCode = first(q, "lawCode");
+            if (lawCode == null || lawCode.isBlank()) {
+                json(exchange, 400, Map.of("success", false, "message", "lawCode_required"));
+                return;
+            }
+            int limit = WebUtil.parseInt(q.get("limit"), 50);
+            int offset = WebUtil.parseInt(q.get("offset"), 0);
+            List<LawText> list = ctx.getLawTextDao().findArticlesByLawCodeLike(lawCode, limit, offset);
+            List<Map<String, Object>> out = new ArrayList<>();
+            for (LawText t : list) {
+                out.add(Map.of(
+                        "id", t.getId(),
+                        "lawCode", t.getLawCode(),
+                        "lawTitle", t.getLawTitle(),
+                        "articleNumber", t.getArticleNumber()
+                ));
+            }
+            json(exchange, 200, Map.of("success", true, "articles", out));
+        }
+    }
+
+    private static final class AdminKbArticleHandler implements HttpHandler {
+        private final WebAppContext ctx;
+
+        private AdminKbArticleHandler(WebAppContext ctx) {
+            this.ctx = ctx;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                methodNotAllowed(exchange);
+                return;
+            }
+            AuthInfo auth = authenticate(ctx, exchange);
+            if (auth == null) {
+                json(exchange, 401, Map.of("success", false, "message", "UNAUTHORIZED"));
+                return;
+            }
+            if (!isSuperAdmin(auth.user())) {
+                json(exchange, 403, Map.of("success", false, "message", "FORBIDDEN"));
+                return;
+            }
+            Map<String, String> q = WebUtil.parseQuery(exchange.getRequestURI().getQuery());
+            long id = WebUtil.parseLong(q.get("id"), -1L);
+            if (id <= 0) {
+                json(exchange, 400, Map.of("success", false, "message", "id_required"));
+                return;
+            }
+            LawText t = ctx.getLawTextDao().findById(id);
+            if (t == null) {
+                json(exchange, 404, Map.of("success", false, "message", "NOT_FOUND"));
+                return;
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("success", true);
+            out.put("article", Map.of(
+                    "id", t.getId(),
+                    "lawCode", t.getLawCode(),
+                    "lawTitle", t.getLawTitle(),
+                    "articleNumber", t.getArticleNumber(),
+                    "fullText", t.getFullText()
+            ));
+            jsonText(exchange, 200, JsonUtil.obj(out));
+        }
+    }
+
+    private static final class AdminKbDeleteArticleHandler implements HttpHandler {
+        private final WebAppContext ctx;
+
+        private AdminKbDeleteArticleHandler(WebAppContext ctx) {
+            this.ctx = ctx;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                methodNotAllowed(exchange);
+                return;
+            }
+            AuthInfo auth = authenticate(ctx, exchange);
+            if (auth == null) {
+                json(exchange, 401, Map.of("success", false, "message", "UNAUTHORIZED"));
+                return;
+            }
+            if (!isSuperAdmin(auth.user())) {
+                json(exchange, 403, Map.of("success", false, "message", "FORBIDDEN"));
+                return;
+            }
+            Map<String, String> form = WebUtil.parseForm(WebUtil.readBody(exchange));
+            long id = WebUtil.parseLong(first(form, "id"), -1L);
+            if (id <= 0) {
+                json(exchange, 400, Map.of("success", false, "message", "id_required"));
+                return;
+            }
+            Map<String, Object> r = ctx.getKbMaintenanceService().deleteArticle(id);
+            jsonText(exchange, 200, JsonUtil.obj(r));
+        }
+    }
+
+    private static final class AdminKbDeleteLawHandler implements HttpHandler {
+        private final WebAppContext ctx;
+
+        private AdminKbDeleteLawHandler(WebAppContext ctx) {
+            this.ctx = ctx;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                methodNotAllowed(exchange);
+                return;
+            }
+            AuthInfo auth = authenticate(ctx, exchange);
+            if (auth == null) {
+                json(exchange, 401, Map.of("success", false, "message", "UNAUTHORIZED"));
+                return;
+            }
+            if (!isSuperAdmin(auth.user())) {
+                json(exchange, 403, Map.of("success", false, "message", "FORBIDDEN"));
+                return;
+            }
+            Map<String, String> form = WebUtil.parseForm(WebUtil.readBody(exchange));
+            String lawCode = first(form, "lawCode");
+            if (lawCode == null || lawCode.isBlank()) {
+                json(exchange, 400, Map.of("success", false, "message", "lawCode_required"));
+                return;
+            }
+            Map<String, Object> r = ctx.getKbMaintenanceService().deleteLawByLawCode(lawCode);
+            jsonText(exchange, 200, JsonUtil.obj(r));
+        }
+    }
+
+    private static final class AdminKbRebuildArticleHandler implements HttpHandler {
+        private final WebAppContext ctx;
+
+        private AdminKbRebuildArticleHandler(WebAppContext ctx) {
+            this.ctx = ctx;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                methodNotAllowed(exchange);
+                return;
+            }
+            AuthInfo auth = authenticate(ctx, exchange);
+            if (auth == null) {
+                json(exchange, 401, Map.of("success", false, "message", "UNAUTHORIZED"));
+                return;
+            }
+            if (!isSuperAdmin(auth.user())) {
+                json(exchange, 403, Map.of("success", false, "message", "FORBIDDEN"));
+                return;
+            }
+            Map<String, String> form = WebUtil.parseForm(WebUtil.readBody(exchange));
+            long id = WebUtil.parseLong(first(form, "id"), -1L);
+            int chunkSize = WebUtil.parseInt(first(form, "chunkSize"), 400);
+            if (id <= 0) {
+                json(exchange, 400, Map.of("success", false, "message", "id_required"));
+                return;
+            }
+            Map<String, Object> r = ctx.getKbMaintenanceService().rebuildArticle(id, chunkSize);
+            jsonText(exchange, 200, JsonUtil.obj(r));
+        }
+    }
+
+    private static final class AdminKbRebuildLawHandler implements HttpHandler {
+        private final WebAppContext ctx;
+
+        private AdminKbRebuildLawHandler(WebAppContext ctx) {
+            this.ctx = ctx;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                methodNotAllowed(exchange);
+                return;
+            }
+            AuthInfo auth = authenticate(ctx, exchange);
+            if (auth == null) {
+                json(exchange, 401, Map.of("success", false, "message", "UNAUTHORIZED"));
+                return;
+            }
+            if (!isSuperAdmin(auth.user())) {
+                json(exchange, 403, Map.of("success", false, "message", "FORBIDDEN"));
+                return;
+            }
+            Map<String, String> form = WebUtil.parseForm(WebUtil.readBody(exchange));
+            String lawCode = first(form, "lawCode");
+            int chunkSize = WebUtil.parseInt(first(form, "chunkSize"), 400);
+            if (lawCode == null || lawCode.isBlank()) {
+                json(exchange, 400, Map.of("success", false, "message", "lawCode_required"));
+                return;
+            }
+            Map<String, Object> r = ctx.getKbMaintenanceService().rebuildLawByLawCode(lawCode, chunkSize);
+            jsonText(exchange, 200, JsonUtil.obj(r));
+        }
+    }
+
+    private static final class AdminKbQualityHandler implements HttpHandler {
+        private final WebAppContext ctx;
+
+        private AdminKbQualityHandler(WebAppContext ctx) {
+            this.ctx = ctx;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                methodNotAllowed(exchange);
+                return;
+            }
+            AuthInfo auth = authenticate(ctx, exchange);
+            if (auth == null) {
+                json(exchange, 401, Map.of("success", false, "message", "UNAUTHORIZED"));
+                return;
+            }
+            if (!isSuperAdmin(auth.user())) {
+                json(exchange, 403, Map.of("success", false, "message", "FORBIDDEN"));
+                return;
+            }
+            Map<String, String> q = WebUtil.parseQuery(exchange.getRequestURI().getQuery());
+            String lawCode = first(q, "lawCode");
+            Map<String, Object> r = ctx.getKbQualityService().checkLawCode(lawCode);
+            jsonText(exchange, 200, JsonUtil.obj(r));
         }
     }
 }

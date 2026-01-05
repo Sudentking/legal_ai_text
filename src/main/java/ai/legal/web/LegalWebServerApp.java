@@ -17,6 +17,8 @@ import ai.legal.rag.service.StructuredLawQueryService;
 import ai.legal.service.VectorSearchService;
 import ai.legal.service.auth.AdminService;
 import ai.legal.service.auth.AuthService;
+import ai.legal.service.kb.KnowledgeBaseMaintenanceService;
+import ai.legal.service.kb.KnowledgeBaseQualityService;
 import com.sun.net.httpserver.HttpServer;
 
 import java.net.InetSocketAddress;
@@ -36,9 +38,11 @@ public class LegalWebServerApp {
         int port = resolvePort(args);
 
         LlmClient llmClient = createLlmClient();
-        VectorSearchService vectorSearchService = new VectorSearchService(new LegalEmbeddingDao());
+        LegalEmbeddingDao embeddingDao = new LegalEmbeddingDao();
+        VectorSearchService vectorSearchService = new VectorSearchService(embeddingDao);
         LegalRagQaService ragQaService = new LegalRagQaService(vectorSearchService, llmClient);
-        StructuredLawQueryService structuredLawQueryService = new StructuredLawQueryService(new LawTextDao());
+        LawTextDao lawTextDao = new LawTextDao();
+        StructuredLawQueryService structuredLawQueryService = new StructuredLawQueryService(lawTextDao);
         LegalAgentService agentService = new LegalAgentService(new LegalIntentClassifier(), ragQaService, structuredLawQueryService, llmClient);
 
         UserAccountDao userAccountDao = new UserAccountDao();
@@ -51,11 +55,17 @@ public class LegalWebServerApp {
         QaLogDao qaLogDao = new QaLogDao();
         AgentTaskHistoryDao taskHistoryDao = new AgentTaskHistoryDao();
 
+        KnowledgeBaseMaintenanceService kbMaintenanceService = new KnowledgeBaseMaintenanceService(lawTextDao, embeddingDao);
+        KnowledgeBaseQualityService kbQualityService = new KnowledgeBaseQualityService(lawTextDao);
+
         WebAppContext ctx = new WebAppContext(
                 authService,
                 adminService,
                 agentService,
                 importService,
+                lawTextDao,
+                kbMaintenanceService,
+                kbQualityService,
                 qaLogDao,
                 taskHistoryDao
         );

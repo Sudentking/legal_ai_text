@@ -8,6 +8,8 @@
 - 法律条文结构化存储：`law_text` / `law_text_chunk`
 - RAG：向量检索 + 条文重组 + 两阶段输出（法律依据 → 法律分析与建议）
 - 法条原文/章节/全文结构化直通：命中后不走向量检索
+- 会话事实记忆（可选）：`session_fact` 记录已确认事实，减少重复追问
+- 确定性工具建议（可选）：证据清单/处理路径/风险点模板（不依赖 LLM）
 - 用户注册/登录/会话/权限（`USER` / `SUPER_ADMIN`）
 - Web 雏形（纯 JDK `HttpServer`）：登录/注册/提问页/后台
 
@@ -18,7 +20,7 @@
 - Agent 主流程：`src/main/java/ai/legal/rag/agent/LegalAgentService.java`
 - 认证与权限：`src/main/java/ai/legal/service/auth/AuthService.java`、`src/main/java/ai/legal/service/auth/AdminService.java`
 - Web Server：`src/main/java/ai/legal/web/LegalWebServerApp.java`
-- SQL 脚本：`sql/mysql_user_auth_schema.sql`、`sql/mysql_agent_log_schema.sql`
+- SQL 脚本：`sql/mysql_user_auth_schema.sql`、`sql/mysql_agent_log_schema.sql`、`sql/mysql_session_fact_schema.sql`
 - 提示词使用：`PROMPT_ENGINEER.md`
 
 ## 环境依赖
@@ -39,15 +41,26 @@ db.password=postgres
 mysql.url=jdbc:mysql://localhost:3306/legal_dev?useSSL=false&serverTimezone=UTC
 mysql.user=root
 mysql.password=root123456
+
+# Embedding（导入与查询必须一致；切换为 hash_ngram_v1 后需重建 legal_embedding）
+embedding.mode=legacy
 ```
 
 ## 初始化数据库（MySQL）
 在 `mysql.url` 指向的库中执行：
 - `sql/mysql_user_auth_schema.sql`（用户/会话/权限：`user_account` / `user_session` / `user_permission`）
 - `sql/mysql_agent_log_schema.sql`（日志：`qa_log` / `agent_task_history`）
+- `sql/mysql_session_fact_schema.sql`（可选：会话事实记忆 `session_fact`，用于减少重复追问）
 
 说明：
 - 法律条文表（`law_text` / `law_text_chunk`）为你的业务核心表，本仓库不自动创建（保持与你现有结构一致）。
+
+## 重建向量库（可选但推荐）
+当你切换 `embedding.mode`（例如改为 `hash_ngram_v1`），或怀疑 PostgreSQL 的 `legal_embedding` 与 MySQL 的切片数据不一致时：
+- 运行 `ai.legal.console.RebuildEmbeddingsMain` 从 `law_text_chunk` 重建 `legal_embedding`（支持断点续跑）
+- 示例：
+  - `java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.console.RebuildEmbeddingsMain --truncate --batchSize 300`
+  - `java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.console.RebuildEmbeddingsMain --fromChunkId 120000 --batchSize 300`
 
 ## 普通用户 vs 超级用户
 - 普通用户（`USER`）
@@ -57,6 +70,7 @@ mysql.password=root123456
 - 超级用户（`SUPER_ADMIN`）
   - Web：登录后进入 `/admin`
   - 可查看用户使用日志：`qa_log` 与 `agent_task_history`
+  - 可进行知识库管理：列表/预览、删除条文/整部法律、重建切片/向量、质量检查
   - 可批量导入文档（写入 `law_text`，并触发分片/向量入库）
   - 可授予/撤销权限（`user_permission`）
 
@@ -81,7 +95,7 @@ java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.web.LegalWebServerApp
 - `http://localhost:8080/login`（登录）
 - `http://localhost:8080/register`（注册）
 - `http://localhost:8080/app`（普通用户提问页）
-- `http://localhost:8080/admin`（超级用户后台：日志/批量导入/权限）
+- `http://localhost:8080/admin`（超级用户后台：日志/知识库查看/批量导入/权限）
 
 ## 运行（CLI）
 启动：
@@ -103,7 +117,8 @@ java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.console.LegalQaCli
   - 未命中：直接提示“未找到匹配条文”，不会用其他条文凑答案
 - RAG（向量检索）适用：法律解释/适用/怎么做等开放问题
   - 输出为两段：`法律依据` → `法律分析与建议`
-  - 若命中“条件/责任”类意图且事实不足，可能追问 1–3 个问题（同一 session 最多 2 轮）
+  - 若命中“条件/责任”类意图且事实不足：先给出阶段性结论/风险点，再追问 1–3 个问题（同一 session 最多 2 轮）
+  - 若已创建 `session_fact`：系统会自动沉淀已确认事实，避免重复询问
 
 ## 提示词（给小白照抄）
 见 `PROMPT_ENGINEER.md`。
@@ -115,5 +130,8 @@ java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.console.LegalQaCli
 - 报错：`Table 'xxx.qa_log' doesn't exist` 或 `Table 'xxx.agent_task_history' doesn't exist`
   - 原因：日志表未创建。
   - 处理：在 `mysql.url` 指向的库执行 `sql/mysql_agent_log_schema.sql`，然后重启 Web/CLI。
+- 报错：`Table 'xxx.session_fact' doesn't exist`
+  - 原因：未创建会话事实表（可选功能）。
+  - 处理：在 `mysql.url` 指向的库执行 `sql/mysql_session_fact_schema.sql`；否则系统会自动停用事实记忆（不影响主流程）。
 - 你在 `legal_ai` 建表但程序写不到
   - 原因：程序只会连 `mysql.url` 指向的那个库；你实际运行时连到哪个库，以报错里的 `xxx.` 或 `mysql.url` 为准。

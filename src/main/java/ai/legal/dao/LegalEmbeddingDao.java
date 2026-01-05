@@ -18,6 +18,40 @@ public class LegalEmbeddingDao {
 
     private static final int VECTOR_DIMENSION = 1536;
 
+    /**
+     * 清空向量表（用于重建向量库）。
+     *
+     * <p>优先使用 TRUNCATE（更快，且可重置自增序列）；失败时退化为 DELETE。
+     */
+    public void clearAll() throws SQLException {
+        String truncate = "TRUNCATE TABLE legal_embedding RESTART IDENTITY";
+        try (Connection connection = DatabaseConfig.getConnection();
+             PreparedStatement statement = connection.prepareStatement(truncate)) {
+            statement.execute();
+            return;
+        } catch (SQLException truncateError) {
+            String del = "DELETE FROM legal_embedding";
+            try (Connection connection = DatabaseConfig.getConnection();
+                 PreparedStatement statement = connection.prepareStatement(del)) {
+                statement.executeUpdate();
+            }
+        }
+    }
+
+    /**
+     * 按 law_id 删除向量记录（law_id 对应 MySQL law_text.id）。
+     *
+     * @return 删除行数
+     */
+    public int deleteByLawId(long lawId) throws SQLException {
+        String sql = "DELETE FROM legal_embedding WHERE law_id = ?";
+        try (Connection connection = DatabaseConfig.getConnection();
+             PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, lawId);
+            return statement.executeUpdate();
+        }
+    }
+
     public long insert(LegalEmbedding embedding) throws SQLException {
         if (embedding == null) {
             throw new IllegalArgumentException("待插入对象不能为空");

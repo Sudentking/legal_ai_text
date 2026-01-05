@@ -8,20 +8,19 @@ import ai.legal.rag.prompt.LegalBasisPromptBuilder;
 import ai.legal.rag.prompt.LegalAnalysisPromptBuilder;
 import ai.legal.rag.service.ChunkAggregator.AggregatedLawContext;
 import ai.legal.service.VectorSearchService;
+import ai.legal.util.EmbeddingUtil;
 
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.UUID;
 
 /**
  * 法律 RAG 问答服务：向量检索 + Prompt 构建 + LLM 调用。
  */
 public class LegalRagQaService {
 
-    private static final int VECTOR_DIMENSION = 1536;
     private static final int TOP_K = 30;
     private static final int MAX_CONTEXTS = 8;
     private static final int SQL_FALLBACK_LIMIT = 80;
@@ -50,6 +49,13 @@ public class LegalRagQaService {
         List<AggregatedLawContext> contexts = retrieveContexts(userQuestion);
         String prompt = LegalRagPromptBuilder.buildPrompt(userQuestion, contexts);
         return llmClient.chat(prompt);
+    }
+
+    /**
+     * 调试/评测用途：返回本次检索的上下文（不触发 LLM）。
+     */
+    public List<AggregatedLawContext> debugRetrieveContexts(String userQuestion) {
+        return retrieveContexts(userQuestion);
     }
 
     /**
@@ -136,7 +142,7 @@ public class LegalRagQaService {
     }
 
     private List<AggregatedLawContext> retrieveContextsByVector(String userQuestion) {
-        double[] queryVector = generateEmbedding(userQuestion);
+        double[] queryVector = EmbeddingUtil.embed(userQuestion);
         List<LegalEmbedding> raw = vectorSearchService.searchTopK(queryVector, TOP_K);
         return ChunkAggregator.aggregate(raw);
     }
@@ -486,24 +492,11 @@ public class LegalRagQaService {
             }
             // 将定位结果拼回去做结构化检索
             String combined = userQuestion + " " + locator.trim();
-            List<LegalEmbedding> raw = vectorSearchService.searchTopK(generateEmbedding(combined), TOP_K);
+            List<LegalEmbedding> raw = vectorSearchService.searchTopK(EmbeddingUtil.embed(combined), TOP_K);
             return ChunkAggregator.aggregate(raw);
         } catch (Exception e) {
             return List.of();
         }
-    }
-
-    /**
-     * 将问题转换为 1536 维向量，采用与导入阶段一致的确定性生成方式。
-     */
-    private double[] generateEmbedding(String text) {
-        double[] vector = new double[VECTOR_DIMENSION];
-        String seed = text == null ? UUID.randomUUID().toString() : text;
-        int base = seed.hashCode();
-        for (int i = 0; i < VECTOR_DIMENSION; i++) {
-            vector[i] = (Math.sin(base + i) + 1) * 0.5;
-        }
-        return vector;
     }
 
     private record ScoredContext(AggregatedLawContext context, int score) {
