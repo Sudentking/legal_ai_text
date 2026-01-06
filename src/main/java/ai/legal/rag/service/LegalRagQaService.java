@@ -3,12 +3,11 @@ package ai.legal.rag.service;
 import ai.legal.dao.mysql.LawTextDao;
 import ai.legal.model.LegalEmbedding;
 import ai.legal.model.LawText;
-import ai.legal.rag.prompt.LegalRagPromptBuilder;
-import ai.legal.rag.prompt.LegalBasisPromptBuilder;
-import ai.legal.rag.prompt.LegalAnalysisPromptBuilder;
 import ai.legal.rag.service.ChunkAggregator.AggregatedLawContext;
 import ai.legal.service.VectorSearchService;
 import ai.legal.util.EmbeddingUtil;
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.service.AiServices;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -26,17 +25,19 @@ public class LegalRagQaService {
     private static final int SQL_FALLBACK_LIMIT = 80;
 
     private final VectorSearchService vectorSearchService;
-    private final LlmClient llmClient;
     private final LawTextDao lawTextDao;
+    private final LegalAssistant assistant;
 
-    public LegalRagQaService(VectorSearchService vectorSearchService, LlmClient llmClient) {
-        this(vectorSearchService, llmClient, new LawTextDao());
+    public LegalRagQaService(VectorSearchService vectorSearchService, ChatLanguageModel chatModel) {
+        this(vectorSearchService,
+                AiServices.builder(LegalAssistant.class).chatLanguageModel(chatModel).build(),
+                new LawTextDao());
     }
 
-    public LegalRagQaService(VectorSearchService vectorSearchService, LlmClient llmClient, LawTextDao lawTextDao) {
+    public LegalRagQaService(VectorSearchService vectorSearchService, LegalAssistant assistant, LawTextDao lawTextDao) {
         this.vectorSearchService = vectorSearchService;
-        this.llmClient = llmClient;
         this.lawTextDao = lawTextDao;
+        this.assistant = assistant;
     }
 
     /**
@@ -47,8 +48,7 @@ public class LegalRagQaService {
      */
     public String answer(String userQuestion) {
         List<AggregatedLawContext> contexts = retrieveContexts(userQuestion);
-        String prompt = LegalRagPromptBuilder.buildPrompt(userQuestion, contexts);
-        return llmClient.chat(prompt);
+        return assistant.answer(safe(userQuestion), renderContexts(contexts));
     }
 
     /**
@@ -100,12 +100,16 @@ public class LegalRagQaService {
         if (contexts == null || contexts.isEmpty()) {
             legalBasis = "法律依据列表：\n（未检索到与问题直接相关的条文，依据有限）";
         } else {
-            String basisPrompt = LegalBasisPromptBuilder.buildPrompt(userQuestion, contexts);
-            legalBasis = llmClient.chat(basisPrompt);
+            legalBasis = assistant.summarizeLegalBasis(safe(userQuestion), renderContexts(contexts));
         }
         // 第二阶段：受控法律分析
-        String analysisPrompt = LegalAnalysisPromptBuilder.buildPrompt(userQuestion, legalBasis, contexts, factsSufficient, historyFacts);
-        String analysis = llmClient.chat(analysisPrompt);
+        String analysis = assistant.analyzeWithAdvice(
+                safe(userQuestion),
+                legalBasis == null ? "" : legalBasis,
+                renderContexts(contexts),
+                factsSufficient,
+                historyFacts == null ? "" : historyFacts
+        );
 
         StringBuilder result = new StringBuilder();
         result.append("法律依据：\n").append(legalBasis == null ? "" : legalBasis.trim()).append("\n\n");
@@ -145,6 +149,26 @@ public class LegalRagQaService {
         double[] queryVector = EmbeddingUtil.embed(userQuestion);
         List<LegalEmbedding> raw = vectorSearchService.searchTopK(queryVector, TOP_K);
         return ChunkAggregator.aggregate(raw);
+    }
+
+    private String renderContexts(List<AggregatedLawContext> contexts) {
+        if (contexts == null || contexts.isEmpty()) {
+            return "（无）";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < contexts.size(); i++) {
+            AggregatedLawContext item = contexts.get(i);
+            sb.append(i + 1).append(") ");
+            sb.append("law_id=").append(item.getLawId());
+            sb.append("，条文范围=").append(item.getArticleRange());
+            sb.append("，覆盖说明=").append(item.getCoverageNote()).append("\n");
+            sb.append(item.getContent()).append("\n\n");
+        }
+        return sb.toString().trim();
+    }
+
+    private String safe(String text) {
+        return text == null ? "" : text.trim();
     }
 
     private List<AggregatedLawContext> retrieveContextsBySqlKeywords(String userQuestion, List<String> keywords) {
@@ -485,8 +509,7 @@ public class LegalRagQaService {
     private List<AggregatedLawContext> retryWithSemanticLocator(String userQuestion) {
         try {
             // 简单提示让 LLM 猜测可能的编/章/条
-            String locatorPrompt = "根据用户问题，推测可能的法律编/章/条号，只输出类似“第一编 第一章 第一条”或“第九条”的简短结果：\n" + userQuestion;
-            String locator = llmClient.chat(locatorPrompt);
+            String locator = assistant.locateLawNumber(safe(userQuestion));
             if (locator == null || locator.isBlank()) {
                 return List.of();
             }

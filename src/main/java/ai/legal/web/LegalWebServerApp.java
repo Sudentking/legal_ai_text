@@ -10,7 +10,9 @@ import ai.legal.dao.mysql.UserSessionDao;
 import ai.legal.importer.LawDocumentImportService;
 import ai.legal.rag.agent.LegalAgentService;
 import ai.legal.rag.intent.LegalIntentClassifier;
-import ai.legal.rag.service.DeepSeekLlmClient;
+import ai.legal.rag.service.DeepSeekChatModelFactory;
+import ai.legal.rag.service.LangChain4jLlmClient;
+import ai.legal.rag.service.LegalAssistant;
 import ai.legal.rag.service.LegalRagQaService;
 import ai.legal.rag.service.LlmClient;
 import ai.legal.rag.service.StructuredLawQueryService;
@@ -20,6 +22,7 @@ import ai.legal.service.auth.AuthService;
 import ai.legal.service.kb.KnowledgeBaseMaintenanceService;
 import ai.legal.service.kb.KnowledgeBaseQualityService;
 import com.sun.net.httpserver.HttpServer;
+import dev.langchain4j.model.chat.ChatLanguageModel;
 
 import java.net.InetSocketAddress;
 import java.util.concurrent.Executors;
@@ -37,10 +40,44 @@ public class LegalWebServerApp {
     public static void main(String[] args) throws Exception {
         int port = resolvePort(args);
 
-        LlmClient llmClient = createLlmClient();
+        ChatLanguageModel chatModel = null;
+        LlmClient llmClient;
+        try {
+            chatModel = DeepSeekChatModelFactory.create();
+            llmClient = new LangChain4jLlmClient(chatModel);
+        } catch (Exception e) {
+            System.out.println("警告：DeepSeek 未配置或不可用，使用 Mock LLM。原因: " + e.getMessage());
+            llmClient = prompt -> "MOCK_LLM_REPLY: " + prompt;
+        }
         LegalEmbeddingDao embeddingDao = new LegalEmbeddingDao();
         VectorSearchService vectorSearchService = new VectorSearchService(embeddingDao);
-        LegalRagQaService ragQaService = new LegalRagQaService(vectorSearchService, llmClient);
+        LegalRagQaService ragQaService;
+        if (chatModel != null) {
+            ragQaService = new LegalRagQaService(vectorSearchService, chatModel);
+        } else {
+            LegalAssistant mock = new LegalAssistant() {
+                @Override
+                public String answer(String question, String contexts) {
+                    return "MOCK_ANSWER\nquestion=" + question;
+                }
+
+                @Override
+                public String summarizeLegalBasis(String question, String contexts) {
+                    return "法律依据列表：\n（MOCK，无真实检索/模型）";
+                }
+
+                @Override
+                public String analyzeWithAdvice(String question, String legalBasis, String contexts, boolean factsSufficient, String historyFacts) {
+                    return "（MOCK）当前无法调用大模型，未生成法律分析。";
+                }
+
+                @Override
+                public String locateLawNumber(String question) {
+                    return "";
+                }
+            };
+            ragQaService = new LegalRagQaService(vectorSearchService, mock, new LawTextDao());
+        }
         LawTextDao lawTextDao = new LawTextDao();
         StructuredLawQueryService structuredLawQueryService = new StructuredLawQueryService(lawTextDao);
         LegalAgentService agentService = new LegalAgentService(new LegalIntentClassifier(), ragQaService, structuredLawQueryService, llmClient);
@@ -91,14 +128,5 @@ public class LegalWebServerApp {
             return 8080;
         }
         return port;
-    }
-
-    private static LlmClient createLlmClient() {
-        try {
-            return new DeepSeekLlmClient();
-        } catch (Exception e) {
-            System.out.println("警告：DeepSeek 未配置或不可用，使用 Mock LLM。原因: " + e.getMessage());
-            return prompt -> "MOCK_LLM_REPLY: " + prompt;
-        }
     }
 }

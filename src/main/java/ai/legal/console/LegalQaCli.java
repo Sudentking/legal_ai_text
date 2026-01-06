@@ -9,7 +9,9 @@ import ai.legal.model.PermissionCode;
 import ai.legal.model.UserAccount;
 import ai.legal.rag.agent.LegalAgentService;
 import ai.legal.rag.intent.LegalIntentClassifier;
-import ai.legal.rag.service.DeepSeekLlmClient;
+import ai.legal.rag.service.DeepSeekChatModelFactory;
+import ai.legal.rag.service.LangChain4jLlmClient;
+import ai.legal.rag.service.LegalAssistant;
 import ai.legal.rag.service.LegalRagQaService;
 import ai.legal.rag.service.LlmClient;
 import ai.legal.rag.service.StructuredLawQueryService;
@@ -17,6 +19,7 @@ import ai.legal.service.VectorSearchService;
 import ai.legal.service.auth.AdminService;
 import ai.legal.service.auth.AuthService;
 import ai.legal.service.auth.LoginResult;
+import dev.langchain4j.model.chat.ChatLanguageModel;
 
 import java.util.Scanner;
 import java.util.UUID;
@@ -41,9 +44,40 @@ public class LegalQaCli {
         System.out.println("  :list-user-perms <username>        （查看用户直授权限，超级用户）");
         System.out.println("  :perms                              （列出权限码）");
 
-        LlmClient llmClient = createLlmClient();
         VectorSearchService vectorSearchService = new VectorSearchService(new LegalEmbeddingDao());
-        LegalRagQaService ragQaService = new LegalRagQaService(vectorSearchService, llmClient);
+        ChatLanguageModel chatModel = null;
+        LlmClient llmClient;
+        LegalRagQaService ragQaService;
+        try {
+            chatModel = DeepSeekChatModelFactory.create();
+            llmClient = new LangChain4jLlmClient(chatModel);
+            ragQaService = new LegalRagQaService(vectorSearchService, chatModel);
+        } catch (Exception e) {
+            System.out.println("警告：DeepSeek 未配置或不可用，使用 Mock LLM。原因: " + e.getMessage());
+            llmClient = prompt -> "MOCK_LLM_REPLY: " + prompt;
+            LegalAssistant mock = new LegalAssistant() {
+                @Override
+                public String answer(String question, String contexts) {
+                    return "MOCK_ANSWER\nquestion=" + question + "\ncontexts=" + (contexts == null ? "" : contexts);
+                }
+
+                @Override
+                public String summarizeLegalBasis(String question, String contexts) {
+                    return "法律依据列表：\n（MOCK，无真实检索/模型）";
+                }
+
+                @Override
+                public String analyzeWithAdvice(String question, String legalBasis, String contexts, boolean factsSufficient, String historyFacts) {
+                    return "（MOCK）当前无法调用大模型，未生成法律分析。";
+                }
+
+                @Override
+                public String locateLawNumber(String question) {
+                    return "";
+                }
+            };
+            ragQaService = new LegalRagQaService(vectorSearchService, mock, new LawTextDao());
+        }
         StructuredLawQueryService structuredLawQueryService = new StructuredLawQueryService(new LawTextDao());
         LegalAgentService agentService = new LegalAgentService(new LegalIntentClassifier(), ragQaService, structuredLawQueryService, llmClient);
 
@@ -225,14 +259,5 @@ public class LegalQaCli {
         }
         System.out.println("未知命令：" + cmd);
         System.out.println("可用命令：:register / :login / :logout / :whoami / :init-admin / :promote / :grant / :revoke / :list-user-perms / :perms");
-    }
-
-    private static LlmClient createLlmClient() {
-        try {
-            return new DeepSeekLlmClient();
-        } catch (Exception e) {
-            System.out.println("警告：DeepSeek 未配置或不可用，使用 Mock LLM。原因: " + e.getMessage());
-            return prompt -> "MOCK_LLM_REPLY: " + prompt;
-        }
     }
 }

@@ -1,6 +1,6 @@
 # legal-ai-system
 
-纯 Java + JDBC 的法律智能问答系统雏形，使用：
+Java + JDBC 的法律智能问答系统雏形（已引入 Spring Boot Starter 用于配置/DI，LangChain4j 用于对接 DeepSeek OpenAI-compatible API），使用：
 - MySQL：业务库（法律条文 + 用户/权限 + 日志）
 - PostgreSQL + pgvector：向量库（RAG 检索）
 
@@ -44,6 +44,12 @@ mysql.password=root123456
 
 # Embedding（导入与查询必须一致；切换为 hash_ngram_v1 后需重建 legal_embedding）
 embedding.mode=legacy
+
+# DeepSeek（LangChain4j OpenAI connector）
+deepseek.base-url=https://api.deepseek.com
+deepseek.api.key=YOUR_API_KEY
+deepseek.model=deepseek-chat
+deepseek.temperature=0.0
 ```
 
 ## 初始化数据库（MySQL）
