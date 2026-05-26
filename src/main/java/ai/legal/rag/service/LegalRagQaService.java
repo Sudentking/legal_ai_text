@@ -14,6 +14,7 @@ import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Consumer;
 
 /**
  * 法律 RAG 问答服务：向量检索 + Prompt 构建 + LLM 调用。
@@ -348,14 +349,24 @@ public class LegalRagQaService {
                     "违约", "赔偿", "损失");
         }
 
-        // 通用：从原问题抽取 2~4 字片段作为关键词补充（过滤停用词）
+        // 场景化扩展：数据/网络/爬虫/个人信息
+        if (containsAny(q, "爬虫", "爬取", "抓取", "数据", "网站", "网络", "个人信息", "隐私", "泄露",
+                "黑客", "入侵", "非法获取", "网络安全", "信息网络", "计算机")) {
+            addAll(terms,
+                    "网络安全", "数据安全", "个人信息", "隐私",
+                    "非法获取", "计算机", "信息网络", "爬虫",
+                    "网络运营", "数据保护", "违法", "侵权",
+                    "民事责任", "行政处罚", "刑事责任", "窃取");
+        }
+
+        // 通用：从原问题抽取 2~4 字片段（优先短词，更有意义）
         List<String> ngrams = extractNgrams(q, 2, 4);
         for (String ng : ngrams) {
             if (isStopKeyword(ng)) {
                 continue;
             }
             terms.add(ng);
-            if (terms.size() >= 10) {
+            if (terms.size() >= 15) {
                 break;
             }
         }
@@ -378,28 +389,31 @@ public class LegalRagQaService {
             if (isCjk(ch)) {
                 segment.append(ch);
             } else {
-                flushNgrams(segment, min, max, out);
+                flushNgramsShortFirst(segment, min, max, out);
                 segment.setLength(0);
             }
         }
-        flushNgrams(segment, min, max, out);
-        // 去重并按出现顺序保留
+        flushNgramsShortFirst(segment, min, max, out);
         LinkedHashSet<String> uniq = new LinkedHashSet<>(out);
         return new ArrayList<>(uniq);
     }
 
-    private void flushNgrams(StringBuilder segment, int min, int max, List<String> out) {
+    private void flushNgramsShortFirst(StringBuilder segment, int min, int max, List<String> out) {
         if (segment == null || segment.length() < min) {
             return;
         }
         String s = segment.toString();
         int len = s.length();
-        for (int n = max; n >= min; n--) {
+        int maxOut = 30;
+        for (int n = min; n <= max; n++) {
             for (int i = 0; i + n <= len; i++) {
                 out.add(s.substring(i, i + n));
-                if (out.size() >= 50) {
+                if (out.size() >= maxOut) {
                     return;
                 }
+            }
+            if (out.size() >= maxOut) {
+                return;
             }
         }
     }
@@ -526,5 +540,69 @@ public class LegalRagQaService {
     }
 
     private record ScoredLawText(LawText lawText, int score) {
+    }
+
+    /**
+     * 流式两阶段 RAG：先在内部整理法律依据，再流式输出法律分析，最后回调完整结果。
+     *
+     * @param onToken         每收到一个分析 token 时回调
+     * @param onComplete      分析完成后回调，传入完整结果文本（用于日志写入）
+     */
+    public void answerWithReasoningStream(String userQuestion,
+                                          boolean factsSufficient,
+                                          String historyFacts,
+                                          Consumer<String> onToken,
+                                          Consumer<String> onComplete) {
+        List<AggregatedLawContext> contexts = retrieveContexts(userQuestion);
+
+        boolean lawLocatorQuery = looksLikeLawLocatorQuery(userQuestion);
+        boolean inconsistent = isInconsistent(userQuestion, contexts);
+        if (lawLocatorQuery && (contexts.isEmpty() || inconsistent)) {
+            List<AggregatedLawContext> fallback = retryWithSemanticLocator(userQuestion);
+            if (!fallback.isEmpty() && !isInconsistent(userQuestion, fallback)) {
+                contexts = fallback;
+                inconsistent = false;
+            }
+        }
+        if (lawLocatorQuery) {
+            if (contexts.isEmpty()) {
+                String msg = "未找到条文";
+                onToken.accept(msg);
+                onComplete.accept(msg);
+                return;
+            }
+            if (inconsistent) {
+                String msg = "检索到的条文与用户请求不一致，已中止回答。";
+                onToken.accept(msg);
+                onComplete.accept(msg);
+                return;
+            }
+        }
+
+        String legalBasis;
+        if (contexts == null || contexts.isEmpty()) {
+            legalBasis = "法律依据列表：\n（未检索到与问题直接相关的条文，依据有限）";
+        } else {
+            String basisPrompt = LegalBasisPromptBuilder.buildPrompt(userQuestion, contexts);
+            legalBasis = llmClient.chat(basisPrompt);
+        }
+
+        StringBuilder header = new StringBuilder();
+        header.append("法律依据：\n").append(legalBasis == null ? "" : legalBasis.trim())
+                .append("\n\n法律分析与建议：\n");
+
+        onToken.accept(header.toString());
+
+        String analysisPrompt = LegalAnalysisPromptBuilder.buildPrompt(
+                userQuestion, legalBasis, contexts, factsSufficient, historyFacts);
+
+        StringBuilder analysisBuf = new StringBuilder();
+        llmClient.chatStream(analysisPrompt, token -> {
+            analysisBuf.append(token);
+            onToken.accept(token);
+        });
+
+        String fullResult = header.toString() + analysisBuf.toString();
+        onComplete.accept(fullResult);
     }
 }
