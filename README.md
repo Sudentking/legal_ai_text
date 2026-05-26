@@ -1,143 +1,245 @@
-# legal-ai-system
+# Legal AI System — 法律智能问答系统
 
-Java + JDBC 的法律智能问答系统雏形（已引入 Spring Boot Starter 用于配置/DI，LangChain4j 用于对接 DeepSeek OpenAI-compatible API），使用：
-- MySQL：业务库（法律条文 + 用户/权限 + 日志）
-- PostgreSQL + pgvector：向量库（RAG 检索）
+基于 **RAG 架构 + Agent 有限状态机** 的法律知识检索与智能分析系统。支持法条原文直查、语义向量检索、多轮追问收敛、流式 SSE 输出，已完成从技术验证到工程化落地的完整演进。
 
-当前包含：
-- 法律条文结构化存储：`law_text` / `law_text_chunk`
-- RAG：向量检索 + 条文重组 + 两阶段输出（法律依据 → 法律分析与建议）
-- 法条原文/章节/全文结构化直通：命中后不走向量检索
-- 会话事实记忆（可选）：`session_fact` 记录已确认事实，减少重复追问
-- 确定性工具建议（可选）：证据清单/处理路径/风险点模板（不依赖 LLM）
-- 用户注册/登录/会话/权限（`USER` / `SUPER_ADMIN`）
-- Web 雏形（纯 JDK `HttpServer`）：登录/注册/提问页/后台
+## 技术栈
 
-## 目录结构（关键入口）
-- 配置：`src/main/resources/application.properties`
-- 结构化法条查询：`src/main/java/ai/legal/rag/service/StructuredLawQueryService.java`
-- RAG 问答服务：`src/main/java/ai/legal/rag/service/LegalRagQaService.java`
-- Agent 主流程：`src/main/java/ai/legal/rag/agent/LegalAgentService.java`
-- 认证与权限：`src/main/java/ai/legal/service/auth/AuthService.java`、`src/main/java/ai/legal/service/auth/AdminService.java`
-- Web Server：`src/main/java/ai/legal/web/LegalWebServerApp.java`
-- SQL 脚本：`sql/mysql_user_auth_schema.sql`、`sql/mysql_agent_log_schema.sql`、`sql/mysql_session_fact_schema.sql`
-- 提示词使用：`PROMPT_ENGINEER.md`
+| 层级 | 技术 |
+|------|------|
+| 语言 | Java 17 |
+| 构建 | Maven + maven-shade-plugin（Fat JAR） |
+| LLM 框架 | LangChain4j 0.35.0 + DeepSeek OpenAI-compatible API |
+| 向量数据库 | PostgreSQL 16 + pgvector（IVFFlat 索引） |
+| 业务数据库 | MySQL 8.0（用户/权限/日志/事实记忆） |
+| Web 服务 | JDK `HttpServer`（零框架，纯标准库） |
+| 前端 | 原生 HTML/CSS/JS（无构建工具，SSE 流式渲染） |
+| DI/配置 | Spring Boot Starter 3.3.6 |
+| 文档解析 | Apache POI（Word）、Apache PDFBox（PDF） |
 
-## 环境依赖
-- JDK 17
-- Maven
-- MySQL（默认库：`legal_dev`）
-- PostgreSQL 16 + pgvector（默认库：`legal_vector`）
+## 核心架构
 
-## 配置
+```
+┌─────────────────────────────────────────────────┐
+│                   Web Layer                      │
+│         JDK HttpServer + SSE Streaming           │
+├─────────────────────────────────────────────────┤
+│                Agent FSM Layer                   │
+│  意图识别 → 状态机决策 → 法条直查 / 追问 / RAG    │
+├─────────────────────────────────────────────────┤
+│                  RAG Engine                      │
+│  向量检索(pgvector) → 门控过滤 → SQL兜底 → LLM   │
+├──────────────────┬──────────────────────────────┤
+│   MySQL (业务)    │   PostgreSQL (向量)           │
+│   law_text       │   legal_embedding             │
+│   user_account   │   pgvector <-> L2 Distance    │
+│   qa_log …       │                              │
+└──────────────────┴──────────────────────────────┘
+```
+
+## 功能模块
+
+### 法条原文直查
+- 支持 `《法律名》第X编 第X章 第X条` 结构化查询
+- 命中后 **不走向量检索**，直接查 MySQL 返回原文
+- 未命中明确提示，不会用相近条文凑答案
+- 中文数字 ↔ 阿拉伯数字自动转换（"第一条" ↔ "第1条"）
+
+### RAG 智能问答（三级级联检索）
+```
+用户问题
+  → ① pgvector 向量相似度检索（L2 距离 Top-30）
+  → ② 门控过滤（关键词打分，score ≥ 2 才可用）
+  → ③ MySQL 关键词 LIKE 兜底（向量不可用时降级）
+  → ④ 两阶段 LLM 生成：法律依据 → 法律分析与建议
+```
+- 场景自适应关键词扩展：借款/租赁/劳动/数据安全/网络爬虫
+- 强制引用条号 + 克制措辞 + 免责声明
+- 流式 SSE 输出，实时逐字显示
+
+### Agent 有限状态机
+```
+INIT → INTENT_DETECTED
+         ├── DIRECT_LAW_QUERY → FINISHED（法条直查）
+         ├── FACT_CHECK → LLM_ANSWER → FINISHED（追问，最多2轮）
+         └── RAG_RETRIEVAL → LLM_ANSWER → FINISHED（语义检索+生成）
+```
+- 单向不可逆，防止 LLM 自由决策导致的无限循环
+- 每步决策写入 `agent_task_history`，全程可审计
+
+### 多轮追问 + 事实记忆
+- 4 个专有场景模板（未成年人借款 / 借贷 / 租赁 / 劳动）
+- 通用场景自适应追问（无具体事实时触发）
+- 用户回答自动抽取事实存入 `session_fact`，后续不再重复问
+- 支持 `不要追问` / `直接给结论` 强制跳过追问
+
+### 用户体系
+- 注册/登录/会话管理（Cookie + 7天有效期）
+- 角色：`USER`（普通用户）/ `SUPER_ADMIN`（管理员）
+- 权限：细粒度 `PermissionCode`，`QA_ASK` 控制问答权限
+- 密码加盐哈希存储
+
+### 管理后台
+- 统计面板：已导入法律数 / 条文总数 / 问答记录数 / 活跃会话数
+- QA 日志 + Agent 决策历史（表格视图 + 详情面板）
+- 知识库管理：法律列表 / 条文浏览 / 质量检查 / 重建切片向量 / 删除
+- 批量文档导入（.docx / .pdf / .txt）
+- 权限管理：授予/撤销/查看用户权限
+
+### 流式输出
+- `POST /api/ask/stream` → `text/event-stream`
+- 前端 `ReadableStream` + `innerHTML` 实时渲染
+- 后端两阶段流式：先推法律依据 → 再流式推送分析 token
+
+## 目录结构
+
+```
+legal_ai/
+├── pom.xml
+├── README.md
+├── PROMPT_ENGINEER.md          # 用户提问指南
+├── DATABASE_SCHEMA.md           # 数据库架构文档
+├── sql/                         # DDL 脚本
+│   ├── mysql_user_auth_schema.sql
+│   ├── mysql_agent_log_schema.sql
+│   └── mysql_session_fact_schema.sql
+└── src/main/
+    ├── java/ai/legal/
+    │   ├── config/              # 数据库连接配置
+    │   ├── console/             # CLI 入口 / 初始化脚本
+    │   ├── dao/                 # 数据访问层 (MySQL + pgvector)
+    │   ├── importer/            # 文档导入解析 (.docx/.pdf/.txt)
+    │   ├── model/               # 数据模型
+    │   ├── rag/
+    │   │   ├── agent/           # Agent FSM 状态机
+    │   │   ├── intent/          # 意图识别
+    │   │   ├── prompt/          # LLM Prompt 构建（4 个 Builder）
+    │   │   └── service/         # RAG / LLM / 法条直查 / 事实评估
+    │   ├── security/            # 密码哈希
+    │   ├── service/             # 业务服务层
+    │   │   ├── auth/            # 认证与权限
+    │   │   ├── importer/        # 向量导入
+    │   │   ├── kb/              # 知识库维护/质量
+    │   │   ├── memory/          # 事实记忆 / 追问生成
+    │   │   └── tool/            # 确定性工具建议
+    │   ├── util/                # Embedding / 分词 / 法条编号
+    │   └── web/                 # HttpServer 路由与处理器
+    └── resources/
+        ├── application.properties
+        └── web/                 # 前端资源
+            ├── admin.html       # 管理后台
+            ├── app.html         # 用户提问页
+            ├── login.html       # 登录页
+            ├── register.html    # 注册页
+            └── assets/
+                ├── admin.js
+                ├── app.js
+                ├── common.js
+                ├── login.js
+                ├── register.js
+                └── styles.css
+```
+
+## 快速开始
+
+### 环境要求
+- JDK 17+
+- Maven 3.6+
+- MySQL 8.0+
+- PostgreSQL 16+ + pgvector 扩展
+
+### 1. 配置数据库
+
 编辑 `src/main/resources/application.properties`：
+
 ```properties
-# PostgreSQL
-db.url=jdbc:postgresql://localhost:5432/legal_vector
+# PostgreSQL (向量库)
+db.url=jdbc:postgresql://YOUR_HOST:5432/legal_vector
 db.user=postgres
-db.password=postgres
+db.password=YOUR_PASSWORD
 
-# MySQL
-mysql.url=jdbc:mysql://localhost:3306/legal_dev?useSSL=false&serverTimezone=UTC
+# MySQL (业务库)
+mysql.url=jdbc:mysql://YOUR_HOST:3306/legal_ai?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
 mysql.user=root
-mysql.password=root123456
+mysql.password=YOUR_PASSWORD
 
-# Embedding（导入与查询必须一致；切换为 hash_ngram_v1 后需重建 legal_embedding）
+# Embedding 模式
 embedding.mode=legacy
 
-# DeepSeek（LangChain4j OpenAI connector）
-deepseek.base-url=https://api.deepseek.com
+# DeepSeek
 deepseek.api.key=YOUR_API_KEY
+deepseek.base-url=https://api.deepseek.com
 deepseek.model=deepseek-chat
 deepseek.temperature=0.0
 ```
 
-## 初始化数据库（MySQL）
-在 `mysql.url` 指向的库中执行：
-- `sql/mysql_user_auth_schema.sql`（用户/会话/权限：`user_account` / `user_session` / `user_permission`）
-- `sql/mysql_agent_log_schema.sql`（日志：`qa_log` / `agent_task_history`）
-- `sql/mysql_session_fact_schema.sql`（可选：会话事实记忆 `session_fact`，用于减少重复追问）
+### 2. 初始化数据库
 
-说明：
-- 法律条文表（`law_text` / `law_text_chunk`）为你的业务核心表，本仓库不自动创建（保持与你现有结构一致）。
-
-## 重建向量库（可选但推荐）
-当你切换 `embedding.mode`（例如改为 `hash_ngram_v1`），或怀疑 PostgreSQL 的 `legal_embedding` 与 MySQL 的切片数据不一致时：
-- 运行 `ai.legal.console.RebuildEmbeddingsMain` 从 `law_text_chunk` 重建 `legal_embedding`（支持断点续跑）
-- 示例：
-  - `java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.console.RebuildEmbeddingsMain --truncate --batchSize 300`
-  - `java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.console.RebuildEmbeddingsMain --fromChunkId 120000 --batchSize 300`
-
-## 普通用户 vs 超级用户
-- 普通用户（`USER`）
-  - Web：登录后进入 `/app`，只能向 Agent 提问
-  - 默认注册会写入 `user_account`，并授予基础权限 `QA_ASK`
-  - 无权访问 `/admin`，也不能查看日志/批量导入
-- 超级用户（`SUPER_ADMIN`）
-  - Web：登录后进入 `/admin`
-  - 可查看用户使用日志：`qa_log` 与 `agent_task_history`
-  - 可进行知识库管理：列表/预览、删除条文/整部法律、重建切片/向量、质量检查
-  - 可批量导入文档（写入 `law_text`，并触发分片/向量入库）
-  - 可授予/撤销权限（`user_permission`）
-
-创建/重置超级用户：
-- 使用 CLI：运行 `ai.legal.console.LegalQaCli` 后输入 `:init-admin <username> <password>`
-- 或代码调用：`AuthService.ensureSuperAdmin(username, password)`
-
-## 构建
 ```bash
-mvn clean package
+mysql -h YOUR_HOST -u root -p legal_ai < sql/mysql_user_auth_schema.sql
+mysql -h YOUR_HOST -u root -p legal_ai < sql/mysql_agent_log_schema.sql
+mysql -h YOUR_HOST -u root -p legal_ai < sql/mysql_session_fact_schema.sql
 ```
 
-说明：推荐在 IDEA 运行 main（Maven 依赖会自动加入 classpath）。若你用 `java -cp target/*.jar` 直接跑，请确保依赖 jar 也在 classpath 中。
+### 3. 构建 & 运行
 
-## 运行（Web）
-启动：
 ```bash
-java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.web.LegalWebServerApp
+mvn clean package -DskipTests
+java -jar target/legal-ai-system-1.0-SNAPSHOT.jar
 ```
 
-页面：
-- `http://localhost:8080/login`（登录）
-- `http://localhost:8080/register`（注册）
-- `http://localhost:8080/app`（普通用户提问页）
-- `http://localhost:8080/admin`（超级用户后台：日志/知识库查看/批量导入/权限）
+启动后访问：
+| 页面 | 地址 |
+|------|------|
+| 登录 | `http://localhost:8080/login` |
+| 注册 | `http://localhost:8080/register` |
+| 提问 | `http://localhost:8080/app` |
+| 后台 | `http://localhost:8080/admin` |
 
-## 运行（CLI）
-启动：
+### 4. 创建超级管理员
+
+```bash
+java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.console.InitSuperAdminMain root_user root_password
+```
+
+### 5. 导入法律数据
+
+在管理后台 → 批量导入，输入文件路径（每行一个）：
+```
+/path/to/民法典.docx
+/path/to/网络安全法.pdf
+/path/to/劳动法.txt
+```
+
+## 使用指南
+
+详细提问模板见 [PROMPT_ENGINEER.md](PROMPT_ENGINEER.md)，三种主要用法：
+
+| 类型 | 示例 | 处理方式 |
+|------|------|----------|
+| 法条原文 | `《中华人民共和国民法典》第一条原文` | SQL 直查，不走 LLM |
+| 按关键词 | `《网络安全法》关于个人信息的法条` | SQL LIKE 关键词匹配 |
+| 法律分析 | `欠钱不还怎么办` + 已知事实 | RAG 两阶段生成 |
+
+## 设计原则
+
+- **准确性优先**：法条原文直查不依赖 LLM，零幻觉风险；RAG 路径强制引用条号
+- **可审计性**：Agent 每一步决策写入 `agent_task_history`，全程可追溯
+- **零框架开销**：Web 层纯 JDK HttpServer，无 Spring MVC / Tomcat
+- **防御性设计**：权限空列表 = 拒绝访问；段落级 XSS 防护；危险操作二次确认
+
+## CLI 模式
+
 ```bash
 java -cp target/legal-ai-system-1.0-SNAPSHOT.jar ai.legal.console.LegalQaCli
 ```
 
 常用命令：
-- `:register <username> <password>`
-- `:login <username> <password>`
-- `:logout` / `:whoami`
-- `:init-admin <username> <password>`
-- `:grant <username> <PERMISSION_CODE>` / `:revoke <username> <PERMISSION_CODE>`
-- `:list-user-perms <username>`
+- `:register <username> <password>` — 注册
+- `:login <username> <password>` — 登录
+- `:init-admin <username> <password>` — 创建超级用户
+- `:grant <username> <PERMISSION_CODE>` — 授予权限
+- `:revoke <username> <PERMISSION_CODE>` — 撤销权限
 
-## RAG 与结构化直通（你需要知道的行为差异）
-- 结构化直通（SQL）适用：法条原文/章节/全文请求（例如包含“原文”“第X条”“第X章”“第X编”“全文/全部内容”等）
-  - 命中后：禁止走向量检索，直接查 MySQL 原文
-  - 未命中：直接提示“未找到匹配条文”，不会用其他条文凑答案
-- RAG（向量检索）适用：法律解释/适用/怎么做等开放问题
-  - 输出为两段：`法律依据` → `法律分析与建议`
-  - 若命中“条件/责任”类意图且事实不足：先给出阶段性结论/风险点，再追问 1–3 个问题（同一 session 最多 2 轮）
-  - 若已创建 `session_fact`：系统会自动沉淀已确认事实，避免重复询问
+## License
 
-## 提示词（给小白照抄）
-见 `PROMPT_ENGINEER.md`。
-
-## 常见报错排查
-- 报错：`Table 'xxx.user_account' doesn't exist`
-  - 原因：当前 `mysql.url` 指向的库里还没建用户/会话/权限表。
-  - 处理：在 `mysql.url` 指向的库执行 `sql/mysql_user_auth_schema.sql`，然后重启 Web/CLI。
-- 报错：`Table 'xxx.qa_log' doesn't exist` 或 `Table 'xxx.agent_task_history' doesn't exist`
-  - 原因：日志表未创建。
-  - 处理：在 `mysql.url` 指向的库执行 `sql/mysql_agent_log_schema.sql`，然后重启 Web/CLI。
-- 报错：`Table 'xxx.session_fact' doesn't exist`
-  - 原因：未创建会话事实表（可选功能）。
-  - 处理：在 `mysql.url` 指向的库执行 `sql/mysql_session_fact_schema.sql`；否则系统会自动停用事实记忆（不影响主流程）。
-- 你在 `legal_ai` 建表但程序写不到
-  - 原因：程序只会连 `mysql.url` 指向的那个库；你实际运行时连到哪个库，以报错里的 `xxx.` 或 `mysql.url` 为准。
+MIT
